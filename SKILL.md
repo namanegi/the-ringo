@@ -33,11 +33,13 @@ uv run ringo record <concept-id> --outcome again|hard|good --activity-key <key> 
 ```
 
 `protocol` describes the implemented capabilities; it does not accept
-`--json`. `--pack` is optional and must be passed consistently to `status`,
-`catalog`, `next`, and `record` when using a custom TOML pack. Do not modify a
-pack during a session. With an active course plan, every `record` must include
-a short whitespace-free `--activity-key` describing the communicative form,
-such as `mock-interview-introduction`; use a new key for a genuinely different
+`--json`. `course apply` imports a TOML pack as the active goal plan. After it
+succeeds, omit `--pack` from `status`, `catalog`, `next`, and `record`; passing
+`--pack` is a deliberate legacy override and disables goal evidence. If that
+override is intentionally selected, pass it consistently. Do not modify a pack
+during a session. With an active course plan, every `record` must include a
+short whitespace-free `--activity-key` describing the communicative form, such
+as `mock-interview-introduction`; use a new key for a genuinely different
 activity.
 
 ## Start-up and session recovery
@@ -54,7 +56,8 @@ activity.
    small TOML pack in `.ringo/` (normally 3–6 truly relevant, ordered,
    progressive competencies), then apply it with `uv run ringo course apply`.
    Use `packs/ja-starter.toml` as the compact TOML schema example. The pack
-   contains concepts only, never generated questions or answers.
+   contains concepts only, never generated questions or answers. After apply,
+   use the active plan through commands without `--pack`.
 4. Only `session.status == "active"` is resumable. Tell the learner its goal
    snapshot and remaining count, then resume it without asking for a new
    question count. A `completed` or `stopped` session is a closed recent
