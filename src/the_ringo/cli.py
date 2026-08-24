@@ -9,6 +9,7 @@ from typing import Sequence
 
 from the_ringo import __version__
 from the_ringo.learning import LearningService, ProgressSnapshot, StudyTarget
+from the_ringo.goal import LearningGoal
 from the_ringo.memory import ReviewOutcome, Scheduler
 from the_ringo.pack import CurriculumPack, CurriculumPackError, CurriculumPackLoader
 from the_ringo.preferences import LearnerPreferences
@@ -25,6 +26,7 @@ PROTOCOL = {
         "learning_loop",
         "learner_preferences",
         "progress_status",
+        "active_learning_goal",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
@@ -35,6 +37,7 @@ PROTOCOL = {
         "configure": "View or update learner preferences.",
         "status": "Summarize learner progress and the next useful concept.",
         "protocol": "Describe implemented machine-facing capabilities.",
+        "goal": "View or set the active learning goal.",
     },
 }
 
@@ -97,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--json", action="store_true", dest="as_json")
     status_parser.add_argument("--pack", type=Path, help="Custom TOML pack path.")
+
+    goal_parser = subparsers.add_parser("goal", help="View or set the active goal.")
+    goal_parser.add_argument("--set", dest="statement", help="Set the active goal.")
+    goal_parser.add_argument("--json", action="store_true", dest="as_json")
 
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
@@ -168,6 +175,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 state.save_preferences(preferences)
             print(json.dumps(_preferences_json(preferences), ensure_ascii=False, indent=2))
+            return 0
+
+        if args.command == "goal":
+            goal = state.get_goal()
+            if args.statement is not None:
+                goal = state.set_goal(LearningGoal(args.statement))
+            result = {"active_goal": goal.statement if goal is not None else None}
+            if args.as_json or args.statement is not None:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print(result["active_goal"] or "none")
             return 0
 
         if args.command == "status":

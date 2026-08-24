@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
 from datetime import UTC, datetime
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
 
@@ -38,6 +41,75 @@ class LocalStateTests(unittest.TestCase):
 
         with self.assertRaises(StateConflictError):
             self.state.initialize("en", "fr")
+
+    def test_learning_goal_is_immutable_and_same_goal_is_idempotent(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        goal = LearningGoal("  商务面试常用日语  ")
+
+        with self.assertRaises(FrozenInstanceError):
+            goal.statement = "changed"  # type: ignore[misc]
+
+        self.assertIsNone(self.state.get_goal())
+        self.state.set_goal(goal)
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        self.assertEqual(self.state.get_goal(), goal)
+        self.assertEqual(self.state.inspect()["event_count"], 2)
+
+    def test_switching_goal_preserves_memory_and_appends_one_event(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        memory = MemoryState(
+            concept_id="ja.greetings",
+            interval_days=2,
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            streak=1,
+            last_outcome=ReviewOutcome.GOOD,
+        )
+        self.state.save_memory(memory)
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        before_switch = self.state.inspect()["event_count"]
+
+        self.state.set_goal(LearningGoal("日本客户会议表达"))
+
+        self.assertEqual(self.state.get_memory(memory.concept_id), memory)
+        self.assertEqual(self.state.inspect()["event_count"], before_switch + 1)
+        self.assertEqual(self.state.get_goal().statement, "日本客户会议表达")
+
+    def test_v3_database_migrates_without_losing_events_or_memory(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        memory = MemoryState(
+            concept_id="ja.greetings",
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            last_outcome=ReviewOutcome.AGAIN,
+        )
+        self.state.save_memory(memory)
+        event_count = self.state.inspect()["event_count"]
+
+        connection = sqlite3.connect(self.state.database_path)
+        try:
+            connection.execute(
+                "UPDATE metadata SET value = '3' WHERE key = 'schema_version'"
+            )
+            connection.execute("DROP TABLE active_goal")
+            connection.commit()
+            self.assertEqual(
+                connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'"
+                ).fetchone()[0],
+                "3",
+            )
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'active_goal'"
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+
+        self.assertIsNone(self.state.get_goal())
+        self.assertEqual(self.state.inspect()["schema_version"], 4)
+        self.assertEqual(self.state.inspect()["event_count"], event_count)
+        self.assertEqual(self.state.get_memory(memory.concept_id), memory)
 
     def test_memory_round_trip_and_unseen_default(self) -> None:
         unseen = self.state.get_memory("ja.greetings")

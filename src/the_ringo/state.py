@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class StateConflictError(RuntimeError):
@@ -90,6 +91,50 @@ class LocalState:
             return LearnerPreferences()
         return LearnerPreferences(row[0], row[1], row[2])
 
+    def get_goal(self) -> LearningGoal | None:
+        """Return the active goal, if the learner has set one."""
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            if self._read_profile(connection) is None:
+                raise RuntimeError("learner state is not initialized")
+            row = connection.execute(
+                "SELECT statement FROM active_goal WHERE singleton = 1"
+            ).fetchone()
+        return LearningGoal(row[0]) if row is not None else None
+
+    def set_goal(self, goal: LearningGoal) -> LearningGoal:
+        """Set the active goal without disturbing existing learning state."""
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            if self._read_profile(connection) is None:
+                raise RuntimeError("learner state is not initialized")
+            previous = connection.execute(
+                "SELECT statement FROM active_goal WHERE singleton = 1"
+            ).fetchone()
+            if previous is not None and previous[0] == goal.statement:
+                return goal
+            connection.execute(
+                """
+                INSERT INTO active_goal (singleton, statement)
+                VALUES (1, ?)
+                ON CONFLICT(singleton) DO UPDATE SET statement = excluded.statement
+                """,
+                (goal.statement,),
+            )
+            self._append_event(
+                connection,
+                kind=("learning_goal_set" if previous is None else "learning_goal_changed"),
+                payload={
+                    "statement": goal.statement,
+                    "previous_statement": previous[0] if previous is not None else None,
+                },
+            )
+        return goal
+
     def get_profile(self) -> LearnerProfile:
         """Return the initialized learner profile."""
         if not self.database_path.exists():
@@ -120,6 +165,7 @@ class LocalState:
                 "profile": None,
                 "event_count": 0,
                 "preferences": None,
+                "active_goal": None,
             }
 
         with self._connect() as connection:
@@ -128,6 +174,7 @@ class LocalState:
             event_count = connection.execute(
                 "SELECT COUNT(*) FROM event_log"
             ).fetchone()[0]
+            goal = self._read_goal(connection)
             return {
                 "initialized": profile is not None,
                 "database_path": str(self.database_path.resolve()),
@@ -139,6 +186,7 @@ class LocalState:
                     if profile is not None
                     else None
                 ),
+                "active_goal": goal.statement if goal is not None else None,
             }
 
     def get_memory(self, concept_id: str) -> MemoryState:
@@ -275,6 +323,16 @@ class LocalState:
             ).fetchone() is not None:
                 LocalState._write_preferences(connection, LearnerPreferences())
             version = 3
+        if version == 3:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS active_goal (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    statement TEXT NOT NULL CHECK (length(trim(statement)) > 0)
+                )
+                """
+            )
+            version = 4
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"unsupported state schema version: {version}")
         connection.execute(
@@ -317,6 +375,13 @@ class LocalState:
             "new_content_ratio": preferences.new_content_ratio,
             "explanation_style": preferences.explanation_style,
         }
+
+    @staticmethod
+    def _read_goal(connection: sqlite3.Connection) -> LearningGoal | None:
+        row = connection.execute(
+            "SELECT statement FROM active_goal WHERE singleton = 1"
+        ).fetchone()
+        return LearningGoal(row[0]) if row is not None else None
 
     @staticmethod
     def _write_preferences(

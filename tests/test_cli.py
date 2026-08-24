@@ -80,6 +80,34 @@ class CliTests(unittest.TestCase):
         self.assertIn("local_state", protocol["capabilities"])
         self.assertIn("curriculum_catalog", protocol["capabilities"])
         self.assertIn("catalog", protocol["commands"])
+        self.assertIn("active_learning_goal", protocol["capabilities"])
+        self.assertIn("goal", protocol["commands"])
+
+    def test_goal_command_reads_sets_and_keeps_same_value_idempotent(self) -> None:
+        self.invoke(
+            "init",
+            "--native-language",
+            "zh-CN",
+            "--target-language",
+            "ja",
+        )
+
+        exit_code, output = self.invoke("goal", "--json")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output), {"active_goal": None})
+
+        exit_code, output = self.invoke(
+            "goal", "--set", "准备商务面试常用日语", "--json"
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(output), {"active_goal": "准备商务面试常用日语"}
+        )
+        self.invoke("goal", "--set", "准备商务面试常用日语")
+        self.assertEqual(self.invoke("doctor", "--json")[0], 0)
+        report = json.loads(self.invoke("doctor", "--json")[1])
+        self.assertEqual(report["active_goal"], "准备商务面试常用日语")
+        self.assertEqual(report["event_count"], 2)
 
     def test_catalog_json_uses_custom_pack_and_dependency_order(self) -> None:
         pack_path = self.root / "custom.toml"
