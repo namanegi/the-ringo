@@ -83,6 +83,33 @@ class CliTests(unittest.TestCase):
         self.assertIn("active_learning_goal", protocol["capabilities"])
         self.assertIn("goal", protocol["commands"])
 
+    def test_active_goal_without_plan_returns_expand_decision(self) -> None:
+        self.invoke(
+            "init",
+            "--native-language",
+            "zh-CN",
+            "--target-language",
+            "ja",
+        )
+        self.invoke("goal", "--set", "商务面试常用日语")
+        (self.root / "packs").mkdir()
+        (self.root / "packs" / "ja-starter.toml").write_text(
+            '[pack]\nid = "starter"\ntitle = "Starter"\nlanguage = "ja"\n\n'
+            '[[concepts]]\nidentifier = "ja.greeting"\ntitle = "Greeting"\n',
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.invoke("next", "--json")
+        decision = json.loads(output)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(decision["next_action"], "expand")
+        self.assertIsNone(decision["target"])
+        self.assertEqual(decision["goal_progress"], None)
+        self.assertEqual(
+            set(decision), {"next_action", "goal_progress", "target"}
+        )
+
     def test_goal_command_reads_sets_and_keeps_same_value_idempotent(self) -> None:
         self.invoke(
             "init",
@@ -234,7 +261,7 @@ title = "Greeting"
         self.assertEqual(json.loads(output), applied)
         exit_code, output = self.invoke("next", "--json")
         self.assertEqual(exit_code, 0)
-        self.assertEqual(json.loads(output)["identifier"], "xx.first")
+        self.assertEqual(json.loads(output)["target"]["identifier"], "xx.first")
         status = json.loads(self.invoke("status", "--json")[1])
         self.assertEqual(status["course_plan"]["pack"]["id"], "custom")
 
@@ -259,8 +286,10 @@ title = "Greeting"
             "record", "ja.greeting", "--outcome", "good", "--activity-key", "roleplay-a"
         )
         next_result = json.loads(self.invoke("next", "--json")[1])
-        self.assertEqual(next_result["coverage"], 1)
-        self.assertEqual(next_result["activity_keys"], ["roleplay-a"])
+        self.assertEqual(next_result["next_action"], "continue")
+        self.assertEqual(next_result["target"]["coverage"], 1)
+        self.assertEqual(next_result["target"]["activity_keys"], ["roleplay-a"])
+        self.assertNotIn("coverage", next_result)
 
     def test_course_apply_rejects_language_mismatch(self) -> None:
         self._write_pack()

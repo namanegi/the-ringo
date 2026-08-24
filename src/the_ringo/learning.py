@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from .curriculum import Concept
 from .course import CoursePlan
 from .evidence import AttemptEvidence
+from .goal import LearningGoal
 from .memory import MemoryState, ReviewOutcome, Scheduler
 from .pack import CurriculumPack
 from .preferences import LearnerPreferences
@@ -24,6 +26,60 @@ class StudyTarget:
     activity_keys: tuple[str, ...] = ()
     coverage: int = 0
     required_coverage: int | None = None
+
+
+class NextAction(StrEnum):
+    """The one machine-facing decision at a goal checkpoint."""
+
+    CONTINUE = "continue"
+    EXPAND = "expand"
+    COMPLETE = "complete"
+
+
+@dataclass(frozen=True, slots=True)
+class CompetencyProgress:
+    """Persisted evidence summarized for one planned competency."""
+
+    identifier: str
+    title: str
+    evidence: tuple[AttemptEvidence, ...]
+    activity_keys: tuple[str, ...]
+    good_activity_keys: tuple[str, ...]
+    required_coverage: int
+
+    @property
+    def coverage(self) -> int:
+        return len(self.good_activity_keys)
+
+    @property
+    def gap(self) -> int:
+        return max(0, self.required_coverage - self.coverage)
+
+    @property
+    def complete(self) -> bool:
+        return self.gap == 0
+
+
+@dataclass(frozen=True, slots=True)
+class GoalProgress:
+    """Immutable goal-level view derived solely from the active plan/evidence."""
+
+    goal: str
+    competencies: tuple[CompetencyProgress, ...]
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.competencies) and all(
+            competency.complete for competency in self.competencies
+        )
+
+    @property
+    def gaps(self) -> tuple[str, ...]:
+        return tuple(
+            competency.identifier
+            for competency in self.competencies
+            if not competency.complete
+        )
 
 
 class EvidencePolicy:
@@ -45,6 +101,8 @@ class ProgressSnapshot:
     next_target: StudyTarget | None
     session: StudySession | None
     as_of: datetime
+    goal_progress: GoalProgress | None = None
+    next_action: NextAction | None = None
 
 
 class LearningService:
@@ -66,6 +124,12 @@ class LearningService:
         """Choose a due review, new concept, or started practice target."""
         curriculum = self.pack.curriculum
         plan = self.state.get_course_plan() if self.use_course_plan else None
+        if (
+            self.use_course_plan
+            and self._active_goal() is not None
+            and plan is None
+        ):
+            return None
         if plan is not None and plan.has_same_pack(self.pack):
             return self._next_goal_target(plan, now)
         memories = {
@@ -108,6 +172,65 @@ class LearningService:
             )
             return StudyTarget(concept, "practice")
         return None
+
+    def goal_progress(self, plan: CoursePlan | None = None) -> GoalProgress | None:
+        """Summarize distinct successful activities for the active goal plan."""
+        if not self.use_course_plan:
+            return None
+        plan = plan or self.state.get_course_plan()
+        if plan is None:
+            return None
+        evidence = self.state.get_attempt_evidence(plan.goal)
+        competencies = []
+        for concept in plan.pack.curriculum.ordered_concepts:
+            concept_evidence = [
+                item for item in evidence if item.concept_id == concept.identifier
+            ]
+            activity_keys = tuple(dict.fromkeys(
+                item.activity_key for item in concept_evidence
+            ))
+            good_keys = tuple(dict.fromkeys(
+                item.activity_key
+                for item in concept_evidence
+                if item.outcome is ReviewOutcome.GOOD
+            ))
+            competencies.append(
+                CompetencyProgress(
+                    concept.identifier,
+                    concept.title,
+                    tuple(concept_evidence),
+                    activity_keys,
+                    good_keys,
+                    EvidencePolicy.SUCCESSFUL_ACTIVITIES_REQUIRED,
+                )
+            )
+        return GoalProgress(plan.goal.statement, tuple(competencies))
+
+    def next_action(self, now: datetime) -> NextAction | None:
+        """Decide whether the agent should teach, extend, or close the goal."""
+        if not self.use_course_plan:
+            return None
+        if self._active_goal() is None:
+            return None
+        plan = self.state.get_course_plan()
+        if plan is None:
+            return NextAction.EXPAND
+        progress = self.goal_progress(plan)
+        if progress is not None and progress.complete:
+            return NextAction.COMPLETE
+        return (
+            NextAction.CONTINUE
+            if self.next_target(now) is not None
+            else NextAction.EXPAND
+        )
+
+    def _active_goal(self) -> LearningGoal | None:
+        try:
+            return self.state.get_goal()
+        except RuntimeError as error:
+            if str(error) == "learner state is not initialized":
+                return None
+            raise
 
     def _next_goal_target(self, plan: CoursePlan, now: datetime) -> StudyTarget | None:
         goal = plan.goal
@@ -189,6 +312,8 @@ class LearningService:
             next_target=self.next_target(now),
             session=self.state.get_session(),
             as_of=now,
+            goal_progress=self.goal_progress(),
+            next_action=self.next_action(now),
         )
 
     def record(

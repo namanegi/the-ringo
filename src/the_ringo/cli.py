@@ -9,7 +9,13 @@ from typing import Sequence
 
 from the_ringo import __version__
 from the_ringo.course import CoursePlan
-from the_ringo.learning import LearningService, ProgressSnapshot, StudyTarget
+from the_ringo.learning import (
+    CompetencyProgress,
+    GoalProgress,
+    LearningService,
+    ProgressSnapshot,
+    StudyTarget,
+)
 from the_ringo.goal import LearningGoal
 from the_ringo.memory import ReviewOutcome, Scheduler
 from the_ringo.pack import CurriculumPack, CurriculumPackError, CurriculumPackLoader
@@ -32,6 +38,7 @@ PROTOCOL = {
         "bounded_study_session",
         "goal_bound_course_plan",
         "attempt_evidence",
+        "goal_checkpoint",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
@@ -306,16 +313,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             now = datetime.now(UTC)
             if args.command == "next":
                 target = service.next_target(now)
-                result = None
-                if target is not None:
+                action = service.next_action(now)
+                result = _target_json(target)
+                if action is not None:
                     result = {
-                        "identifier": target.concept.identifier,
-                        "title": target.concept.title,
-                        "prerequisites": list(target.concept.prerequisites),
-                        "reason": target.reason,
-                        "activity_keys": list(target.activity_keys),
-                        "coverage": target.coverage,
-                        "required_coverage": target.required_coverage,
+                        "next_action": action.value,
+                        "goal_progress": _goal_progress_json(
+                            service.goal_progress()
+                        ),
+                        "target": result,
                     }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
@@ -420,6 +426,10 @@ def _snapshot_json(
         "preferences": _preferences_json(snapshot.preferences),
         "course_plan": _course_json(plan),
         "next": _target_json(snapshot.next_target),
+        "next_action": (
+            snapshot.next_action.value if snapshot.next_action is not None else None
+        ),
+        "goal_progress": _goal_progress_json(snapshot.goal_progress),
         "session": _session_json(snapshot.session),
     }
 
@@ -435,6 +445,40 @@ def _course_json(plan: CoursePlan | None) -> dict[str, object] | None:
             "language": plan.pack.language,
         },
         "competencies": list(plan.competencies),
+    }
+
+
+def _goal_progress_json(
+    progress: GoalProgress | None,
+) -> dict[str, object] | None:
+    if progress is None:
+        return None
+    competencies = [_competency_progress_json(item) for item in progress.competencies]
+    return {
+        "goal": progress.goal,
+        "complete": progress.complete,
+        "required_coverage": (
+            progress.competencies[0].required_coverage
+            if progress.competencies
+            else None
+        ),
+        "gaps": list(progress.gaps),
+        "competencies": competencies,
+    }
+
+
+def _competency_progress_json(
+    progress: CompetencyProgress,
+) -> dict[str, object]:
+    return {
+        "identifier": progress.identifier,
+        "title": progress.title,
+        "activity_keys": list(progress.activity_keys),
+        "good_activity_keys": list(progress.good_activity_keys),
+        "coverage": progress.coverage,
+        "required_coverage": progress.required_coverage,
+        "gap": progress.gap,
+        "complete": progress.complete,
     }
 
 

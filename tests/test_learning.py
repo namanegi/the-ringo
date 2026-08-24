@@ -8,7 +8,7 @@ from pathlib import Path
 from the_ringo.curriculum import Concept, Curriculum
 from the_ringo.course import CoursePlan
 from the_ringo.goal import LearningGoal
-from the_ringo.learning import LearningService
+from the_ringo.learning import LearningService, NextAction
 from the_ringo.memory import MemoryState, ReviewOutcome, Scheduler
 from the_ringo.pack import CurriculumPack
 from the_ringo.state import LocalState
@@ -165,6 +165,29 @@ class LearningServiceTests(unittest.TestCase):
         service.record("first", ReviewOutcome.GOOD, self.now, "first-a")
         service.record("first", ReviewOutcome.GOOD, self.now, "first-b")
         self.assertIsNone(service.next_target(self.now))
+
+    def test_goal_decision_is_expand_without_a_plan(self) -> None:
+        self.state.initialize("zh-CN", "xx")
+        self.state.set_goal(LearningGoal("interview"))
+
+        self.assertIsNone(self.service.next_target(self.now))
+        self.assertEqual(self.service.next_action(self.now), NextAction.EXPAND)
+
+    def test_goal_progress_completes_only_on_distinct_good_activities(self) -> None:
+        service = self._goal_service([Concept("first", "First")])
+        service.record("first", ReviewOutcome.GOOD, self.now, "first-a")
+        service.record("first", ReviewOutcome.GOOD, self.now, "first-a")
+        progress = service.goal_progress()
+
+        self.assertEqual(progress.competencies[0].coverage, 1)
+        self.assertFalse(progress.complete)
+        self.assertEqual(service.next_action(self.now), NextAction.CONTINUE)
+
+        service.record("first", ReviewOutcome.GOOD, self.now, "first-b")
+        progress = service.goal_progress()
+        self.assertTrue(progress.complete)
+        self.assertEqual(progress.gaps, ())
+        self.assertEqual(service.next_action(self.now), NextAction.COMPLETE)
 
 
 if __name__ == "__main__":
