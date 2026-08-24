@@ -11,6 +11,7 @@ from the_ringo.memory import MemoryState, ReviewOutcome
 from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
+from the_ringo.session import SessionStatus, StudySession
 
 
 class LocalStateTests(unittest.TestCase):
@@ -107,7 +108,7 @@ class LocalStateTests(unittest.TestCase):
             connection.close()
 
         self.assertIsNone(self.state.get_goal())
-        self.assertEqual(self.state.inspect()["schema_version"], 4)
+        self.assertEqual(self.state.inspect()["schema_version"], 5)
         self.assertEqual(self.state.inspect()["event_count"], event_count)
         self.assertEqual(self.state.get_memory(memory.concept_id), memory)
 
@@ -165,6 +166,69 @@ class LocalStateTests(unittest.TestCase):
         self.assertEqual(self.state.get_preferences(), updated)
         self.assertEqual(self.state.inspect()["preferences"]["daily_items"], 10)
         self.assertEqual(updated.explanation_style, "Explain with examples.")
+
+    def test_session_requires_goal_and_uses_default_count(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        with self.assertRaises(StateConflictError):
+            self.state.start_session()
+
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        session = self.state.start_session()
+        self.assertEqual(session.agreed_item_count, 10)
+        self.assertEqual(session.status, SessionStatus.ACTIVE)
+
+        resumed = self.state.start_session()
+        self.assertEqual(resumed, session)
+        with self.assertRaises(StateConflictError):
+            self.state.start_session(3)
+
+    def test_session_rejects_inconsistent_lifecycle_counts(self) -> None:
+        goal = LearningGoal("商务面试常用日语")
+        with self.assertRaises(ValueError):
+            StudySession("active-done", goal, 2, 2, SessionStatus.ACTIVE)
+        with self.assertRaises(ValueError):
+            StudySession("completed-open", goal, 2, 1, SessionStatus.COMPLETED)
+
+    def test_session_override_stop_and_completed_session_can_start_new(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        session = self.state.start_session(2)
+        stopped = self.state.stop_session()
+        self.assertEqual(stopped.status, SessionStatus.STOPPED)
+        self.assertEqual(stopped.completed_count, 0)
+
+        replacement = self.state.start_session(1)
+        self.assertNotEqual(replacement.session_id, session.session_id)
+        self.assertEqual(replacement.agreed_item_count, 1)
+
+    def test_review_and_session_advance_roll_back_together(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        self.state.start_session(1)
+        expected = MemoryState(
+            concept_id="ja.greetings",
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            last_outcome=ReviewOutcome.GOOD,
+        )
+        original_append_event = LocalState._append_event
+
+        def fail_session_event(connection: object, kind: str, payload: object) -> None:
+            if kind == "study_session_advanced":
+                raise RuntimeError("session write failed")
+            original_append_event(connection, kind, payload)  # type: ignore[arg-type]
+
+        LocalState._append_event = staticmethod(fail_session_event)
+        self.addCleanup(
+            setattr, LocalState, "_append_event", staticmethod(original_append_event)
+        )
+        with self.assertRaisesRegex(RuntimeError, "session write failed"):
+            self.state.save_review(expected)
+
+        self.assertEqual(
+            self.state.get_memory(expected.concept_id),
+            MemoryState.unseen(expected.concept_id),
+        )
+        self.assertEqual(self.state.get_session().completed_count, 0)
 
 
 if __name__ == "__main__":

@@ -192,6 +192,30 @@ title = "Greeting"
         self.assertEqual(status["progress"], {"started": 0, "total": 2})
         self.assertEqual(status["next"]["reason"], "new")
 
+    def test_session_cli_defaults_resumes_and_record_completes_exactly(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "xx")
+        self.invoke("goal", "--set", "商务面试常用日语")
+
+        exit_code, output = self.invoke("session", "start", "--items", "2", "--json")
+        self.assertEqual(exit_code, 0)
+        started = json.loads(output)
+        self.assertEqual(started["status"], "active")
+        self.assertEqual(started["remaining_items"], 2)
+
+        exit_code, output = self.invoke("record", "xx.first", "--outcome", "good", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["session"]["completed_items"], 1)
+
+        exit_code, output = self.invoke("record", "xx.second", "--outcome", "good", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["session"]["status"], "completed")
+        self.assertEqual(json.loads(output)["session"]["remaining_items"], 0)
+
+        exit_code, output = self.invoke("status", "--json", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["session"]["status"], "completed")
+
     def _write_pack(self) -> None:
         (self.root / "custom.toml").write_text(
             """

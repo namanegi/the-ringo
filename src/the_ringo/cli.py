@@ -14,6 +14,7 @@ from the_ringo.memory import ReviewOutcome, Scheduler
 from the_ringo.pack import CurriculumPack, CurriculumPackError, CurriculumPackLoader
 from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
+from the_ringo.session import StudySession
 
 PROTOCOL = {
     "protocol_version": 1,
@@ -27,6 +28,7 @@ PROTOCOL = {
         "learner_preferences",
         "progress_status",
         "active_learning_goal",
+        "bounded_study_session",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
@@ -38,6 +40,7 @@ PROTOCOL = {
         "status": "Summarize learner progress and the next useful concept.",
         "protocol": "Describe implemented machine-facing capabilities.",
         "goal": "View or set the active learning goal.",
+        "session": "Start, resume, stop, or inspect the bounded study session.",
     },
 }
 
@@ -104,6 +107,13 @@ def build_parser() -> argparse.ArgumentParser:
     goal_parser = subparsers.add_parser("goal", help="View or set the active goal.")
     goal_parser.add_argument("--set", dest="statement", help="Set the active goal.")
     goal_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    session_parser = subparsers.add_parser(
+        "session", help="Start, resume, stop, or inspect a study session."
+    )
+    session_parser.add_argument("action", nargs="?", choices=("start", "stop"))
+    session_parser.add_argument("--items", type=int)
+    session_parser.add_argument("--json", action="store_true", dest="as_json")
 
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
@@ -188,6 +198,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(result["active_goal"] or "none")
             return 0
 
+        if args.command == "session":
+            if args.action == "start":
+                session = state.start_session(args.items)
+            elif args.action == "stop":
+                if args.items is not None:
+                    raise ValueError("--items is only valid with session start")
+                session = state.stop_session()
+            else:
+                if args.items is not None:
+                    raise ValueError("--items is only valid with session start")
+                session = state.get_session()
+            result = _session_json(session)
+            if args.as_json or args.action is not None:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print(_session_text(session))
+            return 0
+
         if args.command == "status":
             snapshot = LearningService(
                 _load_pack(root, args.pack), state, Scheduler()
@@ -258,6 +286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "last_outcome": memory.last_outcome.value
                             if memory.last_outcome is not None
                             else None,
+                            "session": _session_json(state.get_session()),
                         },
                         ensure_ascii=False,
                         indent=2,
@@ -326,6 +355,7 @@ def _snapshot_json(snapshot: ProgressSnapshot) -> dict[str, object]:
         "due_reviews": snapshot.due_reviews,
         "preferences": _preferences_json(snapshot.preferences),
         "next": _target_json(snapshot.next_target),
+        "session": _session_json(snapshot.session),
     }
 
 
@@ -350,5 +380,28 @@ def _snapshot_text(snapshot: ProgressSnapshot) -> str:
             f"{preferences.new_content_ratio:.0%} new · "
             f"{preferences.explanation_style}",
             f"next: {next_line}",
+            f"session: {_session_text(snapshot.session)}",
         )
+    )
+
+
+def _session_json(session: StudySession | None) -> dict[str, object] | None:
+    if session is None:
+        return None
+    return {
+        "id": session.session_id,
+        "goal": session.goal.statement,
+        "agreed_items": session.agreed_item_count,
+        "completed_items": session.completed_count,
+        "remaining_items": session.remaining_count,
+        "status": session.status.value,
+    }
+
+
+def _session_text(session: StudySession | None) -> str:
+    if session is None:
+        return "none"
+    return (
+        f"{session.status.value} — {session.completed_count}/"
+        f"{session.agreed_item_count} items · {session.goal.statement}"
     )

@@ -12,8 +12,9 @@ from typing import Any, Iterator
 from the_ringo.memory import MemoryState, ReviewOutcome
 from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
+from the_ringo.session import SessionStatus, StudySession
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class StateConflictError(RuntimeError):
@@ -135,6 +136,74 @@ class LocalState:
             )
         return goal
 
+    def get_session(self) -> StudySession | None:
+        """Return the current or most recently completed session."""
+        if not self.database_path.exists():
+            return None
+        with self._connect() as connection:
+            self._create_schema(connection)
+            if self._read_profile(connection) is None:
+                return None
+            return self._read_session(connection)
+
+    def start_session(self, item_count: int | None = None) -> StudySession:
+        """Start a bounded session, or resume the existing active one."""
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            if self._read_profile(connection) is None:
+                raise RuntimeError("learner state is not initialized")
+            goal = self._read_goal(connection)
+            if goal is None:
+                raise StateConflictError("set a learning goal before starting a session")
+            current = self._read_session(connection)
+            if current is not None and current.status is SessionStatus.ACTIVE:
+                if item_count is not None and item_count != current.agreed_item_count:
+                    raise StateConflictError(
+                        "an active session already exists with "
+                        f"{current.agreed_item_count} items"
+                    )
+                return current
+            if item_count is None:
+                preference_row = connection.execute(
+                    "SELECT daily_items FROM learner_preferences WHERE singleton = 1"
+                ).fetchone()
+                count = (
+                    preference_row[0]
+                    if preference_row is not None
+                    else LearnerPreferences().daily_items
+                )
+            else:
+                count = item_count
+            session = StudySession(str(uuid.uuid4()), goal, count)
+            self._write_session(connection, session)
+            self._append_event(
+                connection, "study_session_started", {
+                    "session_id": session.session_id,
+                    "goal": goal.statement,
+                    "agreed_item_count": count,
+                }
+            )
+            return session
+
+    def stop_session(self) -> StudySession:
+        """Stop the active session while preserving its progress."""
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            session = self._read_session(connection)
+            if session is None:
+                raise StateConflictError("no study session exists")
+            stopped = session.stop()
+            if stopped != session:
+                self._write_session(connection, stopped)
+                self._append_event(
+                    connection, "study_session_stopped", {"session_id": session.session_id}
+                )
+            return stopped
+
     def get_profile(self) -> LearnerProfile:
         """Return the initialized learner profile."""
         if not self.database_path.exists():
@@ -166,6 +235,7 @@ class LocalState:
                 "event_count": 0,
                 "preferences": None,
                 "active_goal": None,
+                "session": None,
             }
 
         with self._connect() as connection:
@@ -175,6 +245,7 @@ class LocalState:
                 "SELECT COUNT(*) FROM event_log"
             ).fetchone()[0]
             goal = self._read_goal(connection)
+            session = self._read_session(connection)
             return {
                 "initialized": profile is not None,
                 "database_path": str(self.database_path.resolve()),
@@ -187,6 +258,7 @@ class LocalState:
                     else None
                 ),
                 "active_goal": goal.statement if goal is not None else None,
+                "session": _session_json(session),
             }
 
     def get_memory(self, concept_id: str) -> MemoryState:
@@ -220,37 +292,63 @@ class LocalState:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             self._create_schema(connection)
-            connection.execute(
-                """
-                INSERT INTO memory_state (
-                    concept_id, interval_days, due_at, streak, last_outcome
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(concept_id) DO UPDATE SET
-                    interval_days = excluded.interval_days,
-                    due_at = excluded.due_at,
-                    streak = excluded.streak,
-                    last_outcome = excluded.last_outcome
-                """,
-                (
-                    state.concept_id,
-                    state.interval_days,
-                    _format_datetime(state.due_at),
-                    state.streak,
-                    state.last_outcome.value if state.last_outcome else None,
-                ),
-            )
+            self._write_memory_and_event(connection, state)
+
+    def save_review(self, state: MemoryState) -> StudySession | None:
+        """Persist a review and advance an active session in one transaction."""
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            self._create_schema(connection)
+            self._write_memory_and_event(connection, state)
+            session = self._read_session(connection)
+            if session is None or session.status is not SessionStatus.ACTIVE:
+                return session
+            advanced = session.advance()
+            self._write_session(connection, advanced)
             self._append_event(
-                connection,
-                kind="review_recorded",
-                payload={
-                    "concept_id": state.concept_id,
-                    "outcome": state.last_outcome.value
-                    if state.last_outcome is not None
-                    else None,
-                    "interval_days": state.interval_days,
-                    "streak": state.streak,
-                },
+                connection, "study_session_advanced", {
+                    "session_id": session.session_id,
+                    "completed_count": advanced.completed_count,
+                    "status": advanced.status.value,
+                }
             )
+            return advanced
+
+    @staticmethod
+    def _write_memory_and_event(
+        connection: sqlite3.Connection, state: MemoryState
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO memory_state (
+                concept_id, interval_days, due_at, streak, last_outcome
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(concept_id) DO UPDATE SET
+                interval_days = excluded.interval_days,
+                due_at = excluded.due_at,
+                streak = excluded.streak,
+                last_outcome = excluded.last_outcome
+            """,
+            (
+                state.concept_id,
+                state.interval_days,
+                _format_datetime(state.due_at),
+                state.streak,
+                state.last_outcome.value if state.last_outcome else None,
+            ),
+        )
+        LocalState._append_event(
+            connection,
+            kind="review_recorded",
+            payload={
+                "concept_id": state.concept_id,
+                "outcome": state.last_outcome.value
+                if state.last_outcome is not None
+                else None,
+                "interval_days": state.interval_days,
+                "streak": state.streak,
+            },
+        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -333,6 +431,20 @@ class LocalState:
                 """
             )
             version = 4
+        if version == 4:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS study_session (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    session_id TEXT NOT NULL,
+                    goal_statement TEXT NOT NULL CHECK (length(trim(goal_statement)) > 0),
+                    agreed_item_count INTEGER NOT NULL CHECK (agreed_item_count BETWEEN 1 AND 100),
+                    completed_count INTEGER NOT NULL CHECK (completed_count BETWEEN 0 AND agreed_item_count),
+                    status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'stopped'))
+                )
+                """
+            )
+            version = 5
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"unsupported state schema version: {version}")
         connection.execute(
@@ -382,6 +494,38 @@ class LocalState:
             "SELECT statement FROM active_goal WHERE singleton = 1"
         ).fetchone()
         return LearningGoal(row[0]) if row is not None else None
+
+    @staticmethod
+    def _read_session(connection: sqlite3.Connection) -> StudySession | None:
+        row = connection.execute(
+            """SELECT session_id, goal_statement, agreed_item_count,
+                      completed_count, status
+               FROM study_session WHERE singleton = 1"""
+        ).fetchone()
+        if row is None:
+            return None
+        return StudySession(
+            row[0], LearningGoal(row[1]), row[2], row[3], SessionStatus(row[4])
+        )
+
+    @staticmethod
+    def _write_session(connection: sqlite3.Connection, session: StudySession) -> None:
+        connection.execute(
+            """
+            INSERT INTO study_session (
+                singleton, session_id, goal_statement, agreed_item_count,
+                completed_count, status
+            ) VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(singleton) DO UPDATE SET
+                session_id = excluded.session_id,
+                goal_statement = excluded.goal_statement,
+                agreed_item_count = excluded.agreed_item_count,
+                completed_count = excluded.completed_count,
+                status = excluded.status
+            """,
+            (session.session_id, session.goal.statement, session.agreed_item_count,
+             session.completed_count, session.status.value),
+        )
 
     @staticmethod
     def _write_preferences(
@@ -450,3 +594,16 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise ValueError("stored datetime must be timezone-aware UTC")
     return parsed.astimezone(UTC)
+
+
+def _session_json(session: StudySession | None) -> dict[str, object] | None:
+    if session is None:
+        return None
+    return {
+        "id": session.session_id,
+        "goal": session.goal.statement,
+        "agreed_items": session.agreed_item_count,
+        "completed_items": session.completed_count,
+        "remaining_items": session.remaining_count,
+        "status": session.status.value,
+    }

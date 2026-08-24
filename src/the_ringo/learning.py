@@ -10,6 +10,7 @@ from .memory import MemoryState, ReviewOutcome, Scheduler
 from .pack import CurriculumPack
 from .preferences import LearnerPreferences
 from .state import LearnerProfile, LocalState
+from .session import StudySession
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,7 @@ class ProgressSnapshot:
     due_reviews: int
     preferences: LearnerPreferences
     next_target: StudyTarget | None
+    session: StudySession | None
     as_of: datetime
 
 
@@ -108,6 +110,7 @@ class LearningService:
             ),
             preferences=self.state.get_preferences(),
             next_target=self.next_target(now),
+            session=self.state.get_session(),
             as_of=now,
         )
 
@@ -122,5 +125,5 @@ class LearningService:
             raise ValueError(f"unknown concept: {concept_id!r}")
         current = self.state.get_memory(concept_id)
         updated = self.scheduler.review(current, outcome, now)
-        self.state.save_memory(updated)
+        self.state.save_review(updated)
         return updated
