@@ -216,6 +216,37 @@ title = "Greeting"
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(output)["session"]["status"], "completed")
 
+    def test_course_apply_reads_after_restart_and_becomes_default(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "xx")
+        self.invoke("goal", "--set", "商务面试常用日语")
+
+        exit_code, output = self.invoke("course", "apply", "custom.toml", "--json")
+        self.assertEqual(exit_code, 0)
+        applied = json.loads(output)
+        self.assertEqual(applied["goal"], "商务面试常用日语")
+        self.assertEqual(applied["pack"]["id"], "custom")
+        self.assertNotIn("source_path", output)
+        (self.root / "custom.toml").unlink()
+
+        exit_code, output = self.invoke("course", "--json")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output), applied)
+        exit_code, output = self.invoke("next", "--json")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["identifier"], "xx.first")
+        status = json.loads(self.invoke("status", "--json")[1])
+        self.assertEqual(status["course_plan"]["pack"]["id"], "custom")
+
+    def test_course_apply_rejects_language_mismatch(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "ja")
+        self.invoke("goal", "--set", "商务面试")
+
+        exit_code, output = self.invoke("course", "apply", "custom.toml", "--json")
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(output, "")
+
     def _write_pack(self) -> None:
         (self.root / "custom.toml").write_text(
             """

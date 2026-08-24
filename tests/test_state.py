@@ -8,9 +8,12 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.course import CoursePlan
 from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
+from the_ringo.pack import CurriculumPack
+from the_ringo.curriculum import Concept, Curriculum
 from the_ringo.session import SessionStatus, StudySession
 
 
@@ -108,9 +111,36 @@ class LocalStateTests(unittest.TestCase):
             connection.close()
 
         self.assertIsNone(self.state.get_goal())
-        self.assertEqual(self.state.inspect()["schema_version"], 5)
+        self.assertEqual(self.state.inspect()["schema_version"], 6)
         self.assertEqual(self.state.inspect()["event_count"], event_count)
         self.assertEqual(self.state.get_memory(memory.concept_id), memory)
+
+    def test_course_plan_round_trip_and_goal_binding(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        goal = LearningGoal("准备商务面试常用日语")
+        self.state.set_goal(goal)
+        pack = CurriculumPack(
+            "business", "Business interview", "ja",
+            Curriculum([Concept("ja.greeting", "Greeting")]),
+        )
+        plan = CoursePlan(goal, pack)
+        self.state.save_course_plan(plan)
+
+        restored = self.state.get_course_plan()
+        self.assertEqual(restored.goal, goal)
+        self.assertEqual(restored.pack.identifier, "business")
+        self.assertEqual(restored.competencies, ("ja.greeting",))
+
+    def test_course_plan_requires_matching_target_language(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        self.state.set_goal(LearningGoal("商务面试"))
+        pack = CurriculumPack(
+            "english", "English", "en", Curriculum([Concept("en.greeting", "Greeting")])
+        )
+        with self.assertRaisesRegex(StateConflictError, "language"):
+            self.state.save_course_plan(
+                CoursePlan(self.state.get_goal(), pack)
+            )
 
     def test_memory_round_trip_and_unseen_default(self) -> None:
         unseen = self.state.get_memory("ja.greetings")

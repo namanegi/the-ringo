@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from the_ringo import __version__
+from the_ringo.course import CoursePlan
 from the_ringo.learning import LearningService, ProgressSnapshot, StudyTarget
 from the_ringo.goal import LearningGoal
 from the_ringo.memory import ReviewOutcome, Scheduler
@@ -29,6 +30,7 @@ PROTOCOL = {
         "progress_status",
         "active_learning_goal",
         "bounded_study_session",
+        "goal_bound_course_plan",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
@@ -41,6 +43,7 @@ PROTOCOL = {
         "protocol": "Describe implemented machine-facing capabilities.",
         "goal": "View or set the active learning goal.",
         "session": "Start, resume, stop, or inspect the bounded study session.",
+        "course": "Apply or inspect the active goal-bound course plan.",
     },
 }
 
@@ -114,6 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("action", nargs="?", choices=("start", "stop"))
     session_parser.add_argument("--items", type=int)
     session_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    course_parser = subparsers.add_parser(
+        "course", help="Apply or inspect the active course plan."
+    )
+    course_parser.add_argument("action", nargs="?", choices=("apply",))
+    course_parser.add_argument("pack_path", nargs="?")
+    course_parser.add_argument("--json", action="store_true", dest="as_json")
 
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
@@ -216,18 +226,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(_session_text(session))
             return 0
 
+        if args.command == "course":
+            if args.action == "apply":
+                if args.pack_path is None:
+                    raise ValueError("course apply requires a TOML pack path")
+                pack_path = _resolve_pack_path(root, Path(args.pack_path))
+                pack = CurriculumPackLoader().load(pack_path)
+                profile = state.get_profile()
+                goal = state.get_goal()
+                if goal is None:
+                    raise StateConflictError("set a learning goal before applying a course")
+                if pack.language != profile.target_language:
+                    raise StateConflictError(
+                        "course pack language must match learner target language"
+                    )
+                plan = state.save_course_plan(CoursePlan(goal, pack))
+            else:
+                plan = state.get_course_plan()
+            result = _course_json(plan)
+            if args.as_json or args.action is not None:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print(result["pack"]["title"] if result is not None else "none")
+            return 0
+
         if args.command == "status":
             snapshot = LearningService(
-                _load_pack(root, args.pack), state, Scheduler()
+                _load_pack(root, args.pack, state), state, Scheduler()
             ).snapshot(datetime.now(UTC))
             if args.as_json:
-                print(json.dumps(_snapshot_json(snapshot), ensure_ascii=False, indent=2))
+                print(
+                    json.dumps(
+                        _snapshot_json(snapshot, state.get_course_plan()),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             else:
                 print(_snapshot_text(snapshot))
             return 0
 
         if args.command == "catalog":
-            pack = _load_pack(root, args.pack)
+            pack = _load_pack(root, args.pack, state)
             concepts = [
                 {
                     "identifier": concept.identifier,
@@ -256,7 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command in {"next", "record"}:
-            pack = _load_pack(root, args.pack)
+            pack = _load_pack(root, args.pack, state)
             service = LearningService(pack, state, Scheduler())
             now = datetime.now(UTC)
             if args.command == "next":
@@ -310,10 +350,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1
 
 
-def _load_pack(root: Path, requested_path: Path | None) -> CurriculumPack:
-    pack_path = requested_path or Path("packs") / "ja-starter.toml"
-    if not pack_path.is_absolute():
-        pack_path = root / pack_path
+def _resolve_pack_path(root: Path, pack_path: Path) -> Path:
+    return (pack_path if pack_path.is_absolute() else root / pack_path).resolve()
+
+
+def _load_pack(
+    root: Path, requested_path: Path | None, state: LocalState
+) -> CurriculumPack:
+    if requested_path is None:
+        plan = state.get_course_plan()
+        if plan is not None:
+            return plan.pack
+        pack_path = root / Path("packs") / "ja-starter.toml"
+    else:
+        pack_path = _resolve_pack_path(root, requested_path)
     return CurriculumPackLoader().load(pack_path)
 
 
@@ -336,7 +386,9 @@ def _target_json(target: StudyTarget | None) -> dict[str, object] | None:
     }
 
 
-def _snapshot_json(snapshot: ProgressSnapshot) -> dict[str, object]:
+def _snapshot_json(
+    snapshot: ProgressSnapshot, plan: CoursePlan | None = None
+) -> dict[str, object]:
     return {
         "as_of": snapshot.as_of.isoformat(),
         "learner": {
@@ -354,8 +406,23 @@ def _snapshot_json(snapshot: ProgressSnapshot) -> dict[str, object]:
         },
         "due_reviews": snapshot.due_reviews,
         "preferences": _preferences_json(snapshot.preferences),
+        "course_plan": _course_json(plan),
         "next": _target_json(snapshot.next_target),
         "session": _session_json(snapshot.session),
+    }
+
+
+def _course_json(plan: CoursePlan | None) -> dict[str, object] | None:
+    if plan is None:
+        return None
+    return {
+        "goal": plan.goal.statement,
+        "pack": {
+            "id": plan.pack.identifier,
+            "title": plan.pack.title,
+            "language": plan.pack.language,
+        },
+        "competencies": list(plan.competencies),
     }
 
 
