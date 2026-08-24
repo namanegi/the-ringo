@@ -107,6 +107,43 @@ title = "Greeting"
             "1. xx.greeting — Greeting",
         ])
 
+    def test_next_and_record_json_round_trip(self) -> None:
+        self._write_pack()
+
+        exit_code, output = self.invoke("next", "--json", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["identifier"], "xx.first")
+
+        exit_code, output = self.invoke(
+            "record", "xx.first", "--outcome", "good", "--pack", "custom.toml"
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["streak"], 1)
+
+        exit_code, output = self.invoke("next", "--json", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["identifier"], "xx.second")
+
+    def _write_pack(self) -> None:
+        (self.root / "custom.toml").write_text(
+            """
+[pack]
+id = "custom"
+title = "Custom course"
+language = "xx"
+
+[[concepts]]
+identifier = "xx.first"
+title = "First"
+
+[[concepts]]
+identifier = "xx.second"
+title = "Second"
+prerequisites = ["xx.first"]
+""".strip(),
+            encoding="utf-8",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

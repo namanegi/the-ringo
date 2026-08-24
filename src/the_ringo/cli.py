@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
 
 from the_ringo import __version__
-from the_ringo.pack import CurriculumPackError, CurriculumPackLoader
+from the_ringo.learning import LearningService
+from the_ringo.memory import ReviewOutcome, Scheduler
+from the_ringo.pack import CurriculumPack, CurriculumPackError, CurriculumPackLoader
 from the_ringo.state import LocalState, StateConflictError
 
 PROTOCOL = {
@@ -18,11 +21,14 @@ PROTOCOL = {
         "learner_initialization",
         "diagnostics",
         "curriculum_catalog",
+        "learning_loop",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
         "doctor": "Inspect local state and runtime health.",
         "catalog": "List the ordered concepts in a curriculum pack.",
+        "next": "Choose the next concept to study.",
+        "record": "Record a review outcome for a concept.",
         "protocol": "Describe implemented machine-facing capabilities.",
     },
 }
@@ -58,6 +64,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Custom TOML pack path, relative to the project root.",
     )
+
+    next_parser = subparsers.add_parser("next", help="Choose the next concept.")
+    next_parser.add_argument("--json", action="store_true", dest="as_json")
+    next_parser.add_argument("--pack", type=Path, help="Custom TOML pack path.")
+
+    record_parser = subparsers.add_parser(
+        "record", help="Record a concept review outcome."
+    )
+    record_parser.add_argument("concept_id")
+    record_parser.add_argument(
+        "--outcome",
+        choices=[outcome.value for outcome in ReviewOutcome],
+        required=True,
+    )
+    record_parser.add_argument("--pack", type=Path, help="Custom TOML pack path.")
 
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
@@ -101,10 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "catalog":
-            pack_path = args.pack or Path("packs") / "ja-starter.toml"
-            if not pack_path.is_absolute():
-                pack_path = root / pack_path
-            pack = CurriculumPackLoader().load(pack_path)
+            pack = _load_pack(root, args.pack)
             concepts = [
                 {
                     "identifier": concept.identifier,
@@ -132,6 +150,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"{index}. {concept['identifier']} — {concept['title']}")
             return 0
 
+        if args.command in {"next", "record"}:
+            pack = _load_pack(root, args.pack)
+            service = LearningService(pack, state, Scheduler())
+            now = datetime.now(UTC)
+            if args.command == "next":
+                target = service.next_target(now)
+                result = None
+                if target is not None:
+                    result = {
+                        "identifier": target.concept.identifier,
+                        "title": target.concept.title,
+                        "prerequisites": list(target.concept.prerequisites),
+                        "reason": target.reason,
+                    }
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                memory = service.record(
+                    args.concept_id, ReviewOutcome(args.outcome), now
+                )
+                print(
+                    json.dumps(
+                        {
+                            "concept_id": memory.concept_id,
+                            "interval_days": memory.interval_days,
+                            "due_at": memory.due_at.isoformat()
+                            if memory.due_at is not None
+                            else None,
+                            "streak": memory.streak,
+                            "last_outcome": memory.last_outcome.value
+                            if memory.last_outcome is not None
+                            else None,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            return 0
+
         if args.command == "protocol":
             print(json.dumps(PROTOCOL, ensure_ascii=False, indent=2, sort_keys=True))
             return 0
@@ -140,3 +196,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     return 1
+
+
+def _load_pack(root: Path, requested_path: Path | None) -> CurriculumPack:
+    pack_path = requested_path or Path("packs") / "ja-starter.toml"
+    if not pack_path.is_absolute():
+        pack_path = root / pack_path
+    return CurriculumPackLoader().load(pack_path)

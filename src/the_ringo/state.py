@@ -5,11 +5,13 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 1
+from the_ringo.memory import MemoryState, ReviewOutcome
+
+SCHEMA_VERSION = 2
 
 
 class StateConflictError(RuntimeError):
@@ -93,6 +95,69 @@ class LocalState:
                 "event_count": event_count,
             }
 
+    def get_memory(self, concept_id: str) -> MemoryState:
+        """Return a concept's memory state, or an unseen state if absent."""
+        if not concept_id.strip():
+            raise ValueError("concept id must not be empty")
+        if not self.database_path.exists():
+            return MemoryState.unseen(concept_id)
+
+        with self._connect() as connection:
+            self._create_schema(connection)
+            row = connection.execute(
+                """
+                SELECT concept_id, interval_days, due_at, streak, last_outcome
+                FROM memory_state WHERE concept_id = ?
+                """,
+                (concept_id,),
+            ).fetchone()
+        if row is None:
+            return MemoryState.unseen(concept_id)
+        return MemoryState(
+            concept_id=row[0],
+            interval_days=row[1],
+            due_at=_parse_datetime(row[2]),
+            streak=row[3],
+            last_outcome=ReviewOutcome(row[4]) if row[4] is not None else None,
+        )
+
+    def save_memory(self, state: MemoryState) -> None:
+        """Persist memory and its compact review event in one transaction."""
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            self._create_schema(connection)
+            connection.execute(
+                """
+                INSERT INTO memory_state (
+                    concept_id, interval_days, due_at, streak, last_outcome
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(concept_id) DO UPDATE SET
+                    interval_days = excluded.interval_days,
+                    due_at = excluded.due_at,
+                    streak = excluded.streak,
+                    last_outcome = excluded.last_outcome
+                """,
+                (
+                    state.concept_id,
+                    state.interval_days,
+                    _format_datetime(state.due_at),
+                    state.streak,
+                    state.last_outcome.value if state.last_outcome else None,
+                ),
+            )
+            self._append_event(
+                connection,
+                kind="review_recorded",
+                payload={
+                    "concept_id": state.concept_id,
+                    "outcome": state.last_outcome.value
+                    if state.last_outcome is not None
+                    else None,
+                    "interval_days": state.interval_days,
+                    "streak": state.streak,
+                },
+            )
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path)
@@ -130,6 +195,25 @@ class LocalState:
             );
             """
         )
+        version_row = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        version = int(version_row[0]) if version_row is not None else 1
+        if version == 1:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_state (
+                    concept_id TEXT PRIMARY KEY,
+                    interval_days INTEGER NOT NULL CHECK (interval_days >= 0),
+                    due_at TEXT,
+                    streak INTEGER NOT NULL CHECK (streak >= 0),
+                    last_outcome TEXT
+                )
+                """
+            )
+            version = 2
+        if version != SCHEMA_VERSION:
+            raise RuntimeError(f"unsupported state schema version: {version}")
         connection.execute(
             """
             INSERT INTO metadata (key, value) VALUES ('schema_version', ?)
@@ -183,3 +267,20 @@ def _require_language_tag(value: str, label: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _format_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValueError("datetime must be timezone-aware UTC")
+    return value.astimezone(UTC).isoformat()
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("stored datetime must be timezone-aware UTC")
+    return parsed.astimezone(UTC)
