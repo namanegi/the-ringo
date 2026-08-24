@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
 
 
@@ -77,6 +78,21 @@ class LocalStateTests(unittest.TestCase):
             MemoryState.unseen("ja.greetings"),
         )
         self.assertEqual(self.state.inspect()["event_count"], 0)
+
+    def test_preferences_default_and_partial_update_persist(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+
+        self.assertEqual(self.state.get_preferences(), LearnerPreferences())
+
+        updated = LearnerPreferences(
+            new_content_ratio=0.5,
+            explanation_style="  Explain with examples.  ",
+        )
+        self.state.save_preferences(updated)
+
+        self.assertEqual(self.state.get_preferences(), updated)
+        self.assertEqual(self.state.inspect()["preferences"]["daily_items"], 10)
+        self.assertEqual(updated.explanation_style, "Explain with examples.")
 
 
 if __name__ == "__main__":
