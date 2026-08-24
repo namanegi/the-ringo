@@ -48,6 +48,10 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 uv sync
 uv run ringo init --native-language zh-CN --target-language ja
 uv run ringo configure --daily-items 12 --new-content-ratio 0.3 --explanation-style "brief, example-first, and encouraging"
+uv run ringo goal --set "Prepare for a Japanese business interview"
+uv run ringo goal --json
+uv run ringo course --json
+uv run ringo session --json
 uv run ringo catalog
 uv run ringo catalog --json
 uv run ringo status
@@ -59,9 +63,13 @@ uv run ringo protocol
 The initialization command creates `.ringo/state.sqlite3`. That directory is
 ignored by Git and must not contain API keys.
 
+Then point a desktop agent at `SKILL.md` and ask it to begin learning. The agent
+will confirm the goal and question count, create a small local course plan when
+needed, and resume unfinished sessions from CLI state.
+
 ## Current status
 
-The repository currently contains the M1–M3 agent-experience slices:
+The repository currently contains the M1–M5 goal-driven learning loop:
 
 - a local SQLite state store;
 - idempotent learner initialization;
@@ -70,15 +78,19 @@ The repository currently contains the M1–M3 agent-experience slices:
 - `ringo catalog` with human and agent-friendly JSON output;
 - CLI diagnostics and a machine-readable protocol description;
 - persistent scheduling, preferences, and compact `ringo status` output;
+- durable learning goals and bounded resumable sessions;
+- agent-authored, validated competency plans without a stored question bank;
+- compact activity evidence, progression guards, and explainable goal closure;
 - the desktop-agent skill contract;
 - architecture notes and tests.
 
-Exercise generation, grading, additional language packs, and the TUI
-are the next implementation slices. After initialization, `ringo status` shows
-the learner, selected pack, progress, due reviews, preferences, and next action.
-A custom pack can be inspected with
-`uv run ringo catalog --pack path/to/pack.toml`; relative paths are resolved
-from the selected project root. See [`docs/architecture.md`](docs/architecture.md).
+The desktop agent still owns exercise generation, explanation, and semantic
+grading. A standalone TUI and model-provider adapters remain later slices.
+`ringo status --json` exposes the learner, course, session, competency evidence,
+and `continue`, `expand`, or `complete` next action. A custom goal plan can be
+imported with `uv run ringo course apply path/to/pack.toml`; a deliberate legacy
+override remains available through `--pack`. See
+[`docs/architecture.md`](docs/architecture.md).
 The scoped delivery plan lives in [`docs/milestones/`](docs/milestones/README.md).
 
 ## Development
