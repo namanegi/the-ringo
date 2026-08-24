@@ -80,6 +80,34 @@ class CliTests(unittest.TestCase):
         self.assertIn("local_state", protocol["capabilities"])
         self.assertIn("curriculum_catalog", protocol["capabilities"])
         self.assertIn("catalog", protocol["commands"])
+        self.assertIn("active_learning_goal", protocol["capabilities"])
+        self.assertIn("goal", protocol["commands"])
+
+    def test_goal_command_reads_sets_and_keeps_same_value_idempotent(self) -> None:
+        self.invoke(
+            "init",
+            "--native-language",
+            "zh-CN",
+            "--target-language",
+            "ja",
+        )
+
+        exit_code, output = self.invoke("goal", "--json")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output), {"active_goal": None})
+
+        exit_code, output = self.invoke(
+            "goal", "--set", "准备商务面试常用日语", "--json"
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(output), {"active_goal": "准备商务面试常用日语"}
+        )
+        self.invoke("goal", "--set", "准备商务面试常用日语")
+        self.assertEqual(self.invoke("doctor", "--json")[0], 0)
+        report = json.loads(self.invoke("doctor", "--json")[1])
+        self.assertEqual(report["active_goal"], "准备商务面试常用日语")
+        self.assertEqual(report["event_count"], 2)
 
     def test_catalog_json_uses_custom_pack_and_dependency_order(self) -> None:
         pack_path = self.root / "custom.toml"
@@ -163,6 +191,30 @@ title = "Greeting"
         self.assertEqual(exit_code, 0)
         self.assertEqual(status["progress"], {"started": 0, "total": 2})
         self.assertEqual(status["next"]["reason"], "new")
+
+    def test_session_cli_defaults_resumes_and_record_completes_exactly(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "xx")
+        self.invoke("goal", "--set", "商务面试常用日语")
+
+        exit_code, output = self.invoke("session", "start", "--items", "2", "--json")
+        self.assertEqual(exit_code, 0)
+        started = json.loads(output)
+        self.assertEqual(started["status"], "active")
+        self.assertEqual(started["remaining_items"], 2)
+
+        exit_code, output = self.invoke("record", "xx.first", "--outcome", "good", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["session"]["completed_items"], 1)
+
+        exit_code, output = self.invoke("record", "xx.second", "--outcome", "good", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["session"]["status"], "completed")
+        self.assertEqual(json.loads(output)["session"]["remaining_items"], 0)
+
+        exit_code, output = self.invoke("status", "--json", "--pack", "custom.toml")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["session"]["status"], "completed")
 
     def _write_pack(self) -> None:
         (self.root / "custom.toml").write_text(

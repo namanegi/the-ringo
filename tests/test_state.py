@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
 from datetime import UTC, datetime
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
+from the_ringo.session import SessionStatus, StudySession
 
 
 class LocalStateTests(unittest.TestCase):
@@ -38,6 +42,75 @@ class LocalStateTests(unittest.TestCase):
 
         with self.assertRaises(StateConflictError):
             self.state.initialize("en", "fr")
+
+    def test_learning_goal_is_immutable_and_same_goal_is_idempotent(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        goal = LearningGoal("  商务面试常用日语  ")
+
+        with self.assertRaises(FrozenInstanceError):
+            goal.statement = "changed"  # type: ignore[misc]
+
+        self.assertIsNone(self.state.get_goal())
+        self.state.set_goal(goal)
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        self.assertEqual(self.state.get_goal(), goal)
+        self.assertEqual(self.state.inspect()["event_count"], 2)
+
+    def test_switching_goal_preserves_memory_and_appends_one_event(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        memory = MemoryState(
+            concept_id="ja.greetings",
+            interval_days=2,
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            streak=1,
+            last_outcome=ReviewOutcome.GOOD,
+        )
+        self.state.save_memory(memory)
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        before_switch = self.state.inspect()["event_count"]
+
+        self.state.set_goal(LearningGoal("日本客户会议表达"))
+
+        self.assertEqual(self.state.get_memory(memory.concept_id), memory)
+        self.assertEqual(self.state.inspect()["event_count"], before_switch + 1)
+        self.assertEqual(self.state.get_goal().statement, "日本客户会议表达")
+
+    def test_v3_database_migrates_without_losing_events_or_memory(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        memory = MemoryState(
+            concept_id="ja.greetings",
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            last_outcome=ReviewOutcome.AGAIN,
+        )
+        self.state.save_memory(memory)
+        event_count = self.state.inspect()["event_count"]
+
+        connection = sqlite3.connect(self.state.database_path)
+        try:
+            connection.execute(
+                "UPDATE metadata SET value = '3' WHERE key = 'schema_version'"
+            )
+            connection.execute("DROP TABLE active_goal")
+            connection.commit()
+            self.assertEqual(
+                connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'"
+                ).fetchone()[0],
+                "3",
+            )
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'active_goal'"
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+
+        self.assertIsNone(self.state.get_goal())
+        self.assertEqual(self.state.inspect()["schema_version"], 5)
+        self.assertEqual(self.state.inspect()["event_count"], event_count)
+        self.assertEqual(self.state.get_memory(memory.concept_id), memory)
 
     def test_memory_round_trip_and_unseen_default(self) -> None:
         unseen = self.state.get_memory("ja.greetings")
@@ -93,6 +166,69 @@ class LocalStateTests(unittest.TestCase):
         self.assertEqual(self.state.get_preferences(), updated)
         self.assertEqual(self.state.inspect()["preferences"]["daily_items"], 10)
         self.assertEqual(updated.explanation_style, "Explain with examples.")
+
+    def test_session_requires_goal_and_uses_default_count(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        with self.assertRaises(StateConflictError):
+            self.state.start_session()
+
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        session = self.state.start_session()
+        self.assertEqual(session.agreed_item_count, 10)
+        self.assertEqual(session.status, SessionStatus.ACTIVE)
+
+        resumed = self.state.start_session()
+        self.assertEqual(resumed, session)
+        with self.assertRaises(StateConflictError):
+            self.state.start_session(3)
+
+    def test_session_rejects_inconsistent_lifecycle_counts(self) -> None:
+        goal = LearningGoal("商务面试常用日语")
+        with self.assertRaises(ValueError):
+            StudySession("active-done", goal, 2, 2, SessionStatus.ACTIVE)
+        with self.assertRaises(ValueError):
+            StudySession("completed-open", goal, 2, 1, SessionStatus.COMPLETED)
+
+    def test_session_override_stop_and_completed_session_can_start_new(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        session = self.state.start_session(2)
+        stopped = self.state.stop_session()
+        self.assertEqual(stopped.status, SessionStatus.STOPPED)
+        self.assertEqual(stopped.completed_count, 0)
+
+        replacement = self.state.start_session(1)
+        self.assertNotEqual(replacement.session_id, session.session_id)
+        self.assertEqual(replacement.agreed_item_count, 1)
+
+    def test_review_and_session_advance_roll_back_together(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        self.state.set_goal(LearningGoal("商务面试常用日语"))
+        self.state.start_session(1)
+        expected = MemoryState(
+            concept_id="ja.greetings",
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            last_outcome=ReviewOutcome.GOOD,
+        )
+        original_append_event = LocalState._append_event
+
+        def fail_session_event(connection: object, kind: str, payload: object) -> None:
+            if kind == "study_session_advanced":
+                raise RuntimeError("session write failed")
+            original_append_event(connection, kind, payload)  # type: ignore[arg-type]
+
+        LocalState._append_event = staticmethod(fail_session_event)
+        self.addCleanup(
+            setattr, LocalState, "_append_event", staticmethod(original_append_event)
+        )
+        with self.assertRaisesRegex(RuntimeError, "session write failed"):
+            self.state.save_review(expected)
+
+        self.assertEqual(
+            self.state.get_memory(expected.concept_id),
+            MemoryState.unseen(expected.concept_id),
+        )
+        self.assertEqual(self.state.get_session().completed_count, 0)
 
 
 if __name__ == "__main__":
