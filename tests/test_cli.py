@@ -238,6 +238,30 @@ title = "Greeting"
         status = json.loads(self.invoke("status", "--json")[1])
         self.assertEqual(status["course_plan"]["pack"]["id"], "custom")
 
+    def test_active_course_plan_requires_activity_key_and_returns_coverage(self) -> None:
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "ja")
+        self.invoke("goal", "--set", "商务面试")
+        pack = self.root / "business.toml"
+        pack.write_text("""[pack]
+id = "business"
+title = "Business"
+language = "ja"
+
+[[concepts]]
+identifier = "ja.greeting"
+title = "Greeting"
+""", encoding="utf-8")
+        self.assertEqual(self.invoke("course", "apply", str(pack))[0], 0)
+        self.assertEqual(
+            self.invoke("record", "ja.greeting", "--outcome", "good")[0], 2
+        )
+        self.invoke(
+            "record", "ja.greeting", "--outcome", "good", "--activity-key", "roleplay-a"
+        )
+        next_result = json.loads(self.invoke("next", "--json")[1])
+        self.assertEqual(next_result["coverage"], 1)
+        self.assertEqual(next_result["activity_keys"], ["roleplay-a"])
+
     def test_course_apply_rejects_language_mismatch(self) -> None:
         self._write_pack()
         self.invoke("init", "--native-language", "zh-CN", "--target-language", "ja")

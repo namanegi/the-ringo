@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.evidence import AttemptEvidence
 from the_ringo.course import CoursePlan
 from the_ringo.goal import LearningGoal
 from the_ringo.preferences import LearnerPreferences
@@ -259,6 +260,74 @@ class LocalStateTests(unittest.TestCase):
             MemoryState.unseen(expected.concept_id),
         )
         self.assertEqual(self.state.get_session().completed_count, 0)
+
+    def test_attempt_evidence_memory_and_session_are_atomic(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        goal = LearningGoal("商务面试")
+        self.state.set_goal(goal)
+        self.state.start_session(1)
+        expected = MemoryState(
+            concept_id="ja.greetings",
+            due_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            last_outcome=ReviewOutcome.GOOD,
+        )
+        evidence = AttemptEvidence(
+            goal, "ja.greetings", "greeting-roleplay", ReviewOutcome.GOOD,
+            self.state.get_session().session_id,
+        )
+        original_append_event = LocalState._append_event
+
+        def fail_session_event(connection: object, kind: str, payload: object) -> None:
+            if kind == "study_session_advanced":
+                raise RuntimeError("session write failed")
+            original_append_event(connection, kind, payload)  # type: ignore[arg-type]
+
+        LocalState._append_event = staticmethod(fail_session_event)
+        self.addCleanup(
+            setattr, LocalState, "_append_event", staticmethod(original_append_event)
+        )
+        with self.assertRaisesRegex(RuntimeError, "session write failed"):
+            self.state.save_review(expected, evidence)
+
+        self.assertEqual(self.state.get_memory(expected.concept_id), MemoryState.unseen(expected.concept_id))
+        self.assertEqual(self.state.get_session().completed_count, 0)
+        self.assertEqual(self.state.get_attempt_evidence(goal), ())
+
+    def test_course_plan_apply_is_idempotent_and_only_allows_extensions(self) -> None:
+        self.state.initialize("zh-CN", "ja")
+        goal = LearningGoal("商务面试")
+        self.state.set_goal(goal)
+        first = CurriculumPack(
+            "business", "Business", "ja", Curriculum([Concept("ja.greeting", "Greeting")])
+        )
+        self.state.save_course_plan(CoursePlan(goal, first))
+        event_count = self.state.inspect()["event_count"]
+        self.state.save_course_plan(CoursePlan(goal, first))
+        self.assertEqual(self.state.inspect()["event_count"], event_count)
+
+        extended = CurriculumPack(
+            "business", "Business", "ja", Curriculum([
+                Concept("ja.greeting", "Greeting"),
+                Concept("ja.self-introduction", "Self introduction", ("ja.greeting",)),
+            ])
+        )
+        self.state.save_course_plan(CoursePlan(goal, extended))
+        rewritten = CurriculumPack(
+            "business", "Business", "ja", Curriculum([Concept("ja.greeting", "Rewritten")])
+        )
+        with self.assertRaisesRegex(StateConflictError, "compatible extension"):
+            self.state.save_course_plan(CoursePlan(goal, rewritten))
+
+        next_goal = LearningGoal("客户会议")
+        self.state.set_goal(next_goal)
+        replacement = CurriculumPack(
+            "meetings",
+            "Meetings",
+            "ja",
+            Curriculum([Concept("ja.meeting", "Meeting")]),
+        )
+        self.state.save_course_plan(CoursePlan(next_goal, replacement))
+        self.assertEqual(self.state.get_course_plan().goal, next_goal)
 
 
 if __name__ == "__main__":

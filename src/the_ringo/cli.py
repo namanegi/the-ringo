@@ -31,13 +31,14 @@ PROTOCOL = {
         "active_learning_goal",
         "bounded_study_session",
         "goal_bound_course_plan",
+        "attempt_evidence",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
         "doctor": "Inspect local state and runtime health.",
         "catalog": "List the ordered concepts in a curriculum pack.",
         "next": "Choose the next concept to study.",
-        "record": "Record a review outcome for a concept.",
+        "record": "Record a review outcome and optional activity evidence for a concept.",
         "configure": "View or update learner preferences.",
         "status": "Summarize learner progress and the next useful concept.",
         "protocol": "Describe implemented machine-facing capabilities.",
@@ -121,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     course_parser = subparsers.add_parser(
         "course", help="Apply or inspect the active course plan."
     )
+    record_parser.add_argument("--activity-key")
     course_parser.add_argument("action", nargs="?", choices=("apply",))
     course_parser.add_argument("pack_path", nargs="?")
     course_parser.add_argument("--json", action="store_true", dest="as_json")
@@ -252,7 +254,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "status":
             snapshot = LearningService(
-                _load_pack(root, args.pack, state), state, Scheduler()
+                _load_pack(root, args.pack, state), state, Scheduler(),
+                use_course_plan=args.pack is None,
             ).snapshot(datetime.now(UTC))
             if args.as_json:
                 print(
@@ -297,7 +300,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command in {"next", "record"}:
             pack = _load_pack(root, args.pack, state)
-            service = LearningService(pack, state, Scheduler())
+            service = LearningService(
+                pack, state, Scheduler(), use_course_plan=args.pack is None
+            )
             now = datetime.now(UTC)
             if args.command == "next":
                 target = service.next_target(now)
@@ -308,11 +313,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "title": target.concept.title,
                         "prerequisites": list(target.concept.prerequisites),
                         "reason": target.reason,
+                        "activity_keys": list(target.activity_keys),
+                        "coverage": target.coverage,
+                        "required_coverage": target.required_coverage,
                     }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
                 memory = service.record(
-                    args.concept_id, ReviewOutcome(args.outcome), now
+                    args.concept_id, ReviewOutcome(args.outcome), now,
+                    args.activity_key,
                 )
                 print(
                     json.dumps(
@@ -383,6 +392,9 @@ def _target_json(target: StudyTarget | None) -> dict[str, object] | None:
         "title": target.concept.title,
         "prerequisites": list(target.concept.prerequisites),
         "reason": target.reason,
+        "activity_keys": list(target.activity_keys),
+        "coverage": target.coverage,
+        "required_coverage": target.required_coverage,
     }
 
 
