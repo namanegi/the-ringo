@@ -7,15 +7,22 @@ from pathlib import Path
 from typing import Sequence
 
 from the_ringo import __version__
+from the_ringo.pack import CurriculumPackError, CurriculumPackLoader
 from the_ringo.state import LocalState, StateConflictError
 
 PROTOCOL = {
     "protocol_version": 1,
     "application_version": __version__,
-    "capabilities": ["local_state", "learner_initialization", "diagnostics"],
+    "capabilities": [
+        "local_state",
+        "learner_initialization",
+        "diagnostics",
+        "curriculum_catalog",
+    ],
     "commands": {
         "init": "Initialize one local learner profile.",
         "doctor": "Inspect local state and runtime health.",
+        "catalog": "List the ordered concepts in a curriculum pack.",
         "protocol": "Describe implemented machine-facing capabilities.",
     },
 }
@@ -41,6 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="Inspect local state.")
     doctor_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    catalog_parser = subparsers.add_parser(
+        "catalog", help="List concepts in a curriculum pack."
+    )
+    catalog_parser.add_argument("--json", action="store_true", dest="as_json")
+    catalog_parser.add_argument(
+        "--pack",
+        type=Path,
+        help="Custom TOML pack path, relative to the project root.",
+    )
 
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
@@ -83,12 +100,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"state: {report['database_path']}")
             return 0
 
+        if args.command == "catalog":
+            pack_path = args.pack or Path("packs") / "ja-starter.toml"
+            if not pack_path.is_absolute():
+                pack_path = root / pack_path
+            pack = CurriculumPackLoader().load(pack_path)
+            concepts = [
+                {
+                    "identifier": concept.identifier,
+                    "title": concept.title,
+                    "prerequisites": list(concept.prerequisites),
+                }
+                for concept in pack.curriculum.ordered_concepts
+            ]
+            if args.as_json:
+                print(
+                    json.dumps(
+                        {
+                            "id": pack.identifier,
+                            "title": pack.title,
+                            "language": pack.language,
+                            "concepts": concepts,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                print(f"{pack.title} [{pack.language}] ({pack.identifier})")
+                for index, concept in enumerate(concepts, start=1):
+                    print(f"{index}. {concept['identifier']} — {concept['title']}")
+            return 0
+
         if args.command == "protocol":
             print(json.dumps(PROTOCOL, ensure_ascii=False, indent=2, sort_keys=True))
             return 0
-    except (OSError, ValueError, StateConflictError) as error:
+    except (OSError, ValueError, StateConflictError, CurriculumPackError) as error:
         print(f"ringo: error: {error}", file=sys.stderr)
         return 2
 
     return 1
-

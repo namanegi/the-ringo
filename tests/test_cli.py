@@ -47,6 +47,65 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(protocol["protocol_version"], 1)
         self.assertIn("local_state", protocol["capabilities"])
+        self.assertIn("curriculum_catalog", protocol["capabilities"])
+        self.assertIn("catalog", protocol["commands"])
+
+    def test_catalog_json_uses_custom_pack_and_dependency_order(self) -> None:
+        pack_path = self.root / "custom.toml"
+        pack_path.write_text(
+            """
+[pack]
+id = "custom"
+title = "Custom course"
+language = "xx"
+
+[[concepts]]
+identifier = "xx.first"
+title = "First"
+
+[[concepts]]
+identifier = "xx.second"
+title = "Second"
+prerequisites = ["xx.first"]
+""".strip(),
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.invoke("catalog", "--pack", "custom.toml", "--json")
+
+        self.assertEqual(exit_code, 0)
+        catalog = json.loads(output)
+        self.assertEqual(catalog["id"], "custom")
+        self.assertEqual(
+            [concept["identifier"] for concept in catalog["concepts"]],
+            ["xx.first", "xx.second"],
+        )
+
+    def test_catalog_human_output_is_compact(self) -> None:
+        packs_directory = self.root / "packs"
+        packs_directory.mkdir()
+        pack_path = packs_directory / "ja-starter.toml"
+        pack_path.write_text(
+            """
+[pack]
+id = "tiny"
+title = "Tiny course"
+language = "xx"
+
+[[concepts]]
+identifier = "xx.greeting"
+title = "Greeting"
+""".strip(),
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.invoke("catalog")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.splitlines(), [
+            "Tiny course [xx] (tiny)",
+            "1. xx.greeting — Greeting",
+        ])
 
 
 if __name__ == "__main__":
