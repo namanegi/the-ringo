@@ -56,6 +56,21 @@ class LearningServiceTests(unittest.TestCase):
         self.assertIsNotNone(target)
         self.assertEqual(target.concept.identifier, "second")
 
+    def test_hard_result_keeps_prerequisite_available_for_practice(self) -> None:
+        self.service.pack = CurriculumPack(
+            "test", "Test", "xx", Curriculum(
+                [Concept("first", "First"), Concept("second", "Second", ("first",))]
+            )
+        )
+        self.service.record("first", ReviewOutcome.HARD, self.now)
+
+        target = self.service.next_target(self.now)
+
+        self.assertIsNotNone(target)
+        self.assertEqual(
+            (target.concept.identifier, target.reason), ("first", "practice")
+        )
+
     def test_record_persists_scheduled_state(self) -> None:
         state = self.service.record("first", ReviewOutcome.GOOD, self.now)
         self.assertEqual(self.state.get_memory("first"), state)
