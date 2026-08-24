@@ -48,7 +48,7 @@ class LearningService:
         self.scheduler = scheduler
 
     def next_target(self, now: datetime) -> StudyTarget | None:
-        """Choose a due review, or the first prerequisite-ready unseen concept."""
+        """Choose a due review, new concept, or started practice target."""
         curriculum = self.pack.curriculum
         memories = {
             concept.identifier: self.state.get_memory(concept.identifier)
@@ -73,6 +73,22 @@ class LearningService:
                 for prerequisite in concept.prerequisites
             ):
                 return StudyTarget(concept, "new")
+
+        started = [
+            (index, concept, memories[concept.identifier])
+            for index, concept in enumerate(curriculum.ordered_concepts)
+            if memories[concept.identifier].last_outcome is not None
+        ]
+        if started:
+            _, concept, _ = min(
+                started,
+                key=lambda item: (
+                    item[2].due_at is not None,
+                    item[2].due_at if item[2].due_at is not None else now,
+                    item[0],
+                ),
+            )
+            return StudyTarget(concept, "practice")
         return None
 
     def snapshot(self, now: datetime) -> ProgressSnapshot:
