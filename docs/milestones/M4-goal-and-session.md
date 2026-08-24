@@ -40,4 +40,3 @@ contract on startup, and run an isolated Luna role play across an agent restart.
 
 Automatic course planning, detailed attempt history, mastery rules, generated
 question storage, providers, and a TUI.
-

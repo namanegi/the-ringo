@@ -45,4 +45,3 @@ course proposals.
 
 A hosted content backend, stored generated question banks, embeddings, elaborate
 rubrics, voice, provider adapters, and heavy end-to-end infrastructure.
-

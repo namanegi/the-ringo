@@ -116,4 +116,3 @@ targets and two self-introduction targets.
 | goal attainment | PARTIAL | attempts were graded, but no goal-level decision existed |
 | next-course proposal | FAIL | the session ended after the sixth record |
 | progressive content | FAIL | greetings repeated four times with little progression |
-
