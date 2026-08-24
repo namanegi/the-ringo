@@ -1,0 +1,18 @@
+[pack]
+id = "ja-starter"
+title = "Japanese starter"
+language = "ja"
+
+[[concepts]]
+identifier = "ja.greetings"
+title = "Basic greetings"
+
+[[concepts]]
+identifier = "ja.self-introduction"
+title = "Simple self-introduction"
+prerequisites = ["ja.greetings"]
+
+[[concepts]]
+identifier = "ja.copula"
+title = "です sentences"
+prerequisites = ["ja.self-introduction"]
