@@ -10,11 +10,15 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.course import CoursePlan
+from the_ringo.curriculum import Concept, Curriculum
+from the_ringo.evidence import AttemptEvidence
 from the_ringo.goal import LearningGoal
+from the_ringo.pack import CurriculumPack
 from the_ringo.preferences import LearnerPreferences
 from the_ringo.session import SessionStatus, StudySession
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class StateConflictError(RuntimeError):
@@ -136,6 +140,136 @@ class LocalState:
             )
         return goal
 
+    def save_course_plan(self, plan: CoursePlan) -> CoursePlan:
+        """Persist the one active, goal-bound course plan."""
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            profile = self._read_profile(connection)
+            goal = self._read_goal(connection)
+            if profile is None:
+                raise RuntimeError("learner state is not initialized")
+            if goal is None or goal != plan.goal:
+                raise StateConflictError(
+                    "course plan must match the active learning goal"
+                )
+            if profile.target_language != plan.pack.language:
+                raise StateConflictError(
+                    "course pack language must match learner target language"
+                )
+            previous_plan = self._read_course_plan(connection)
+            if previous_plan is not None and previous_plan.goal == plan.goal:
+                if previous_plan.is_same_as(plan):
+                    return plan
+                if not previous_plan.is_compatible_extension(plan):
+                    raise StateConflictError(
+                        "course plan must be an unchanged plan or a compatible extension"
+                    )
+            payload = _course_plan_payload(plan)
+            connection.execute(
+                """
+                INSERT INTO active_course_plan (singleton, payload_json)
+                VALUES (1, ?)
+                ON CONFLICT(singleton) DO UPDATE SET payload_json = excluded.payload_json
+                """,
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True),),
+            )
+            self._append_event(connection, "course_plan_applied", payload)
+        return plan
+
+    def get_course_plan(self) -> CoursePlan | None:
+        """Load and validate the active plan against the current goal/profile."""
+        if not self.database_path.exists():
+            return None
+        with self._connect() as connection:
+            self._create_schema(connection)
+            row = connection.execute(
+                "SELECT payload_json FROM active_course_plan WHERE singleton = 1"
+            ).fetchone()
+            if row is None:
+                return None
+            payload = json.loads(row[0])
+            goal = self._read_goal(connection)
+            profile = self._read_profile(connection)
+        if goal is None or payload["goal"] != goal.statement:
+            raise StateConflictError(
+                "active course plan does not match the active learning goal; "
+                "apply a course plan for the current goal"
+            )
+        concepts = tuple(
+            Concept(
+                item["identifier"], item["title"], tuple(item["prerequisites"])
+            )
+            for item in payload["concepts"]
+        )
+        pack = CurriculumPack(
+            payload["pack_id"], payload["pack_title"], payload["language"],
+            Curriculum(concepts),
+        )
+        if tuple(item["identifier"] for item in payload["concepts"]) != tuple(
+            concept.identifier for concept in pack.curriculum.ordered_concepts
+        ):
+            raise StateConflictError("active course plan pack has changed; re-apply it")
+        if profile is not None and pack.language != profile.target_language:
+            raise StateConflictError(
+                "active course plan language does not match learner target language"
+            )
+        return CoursePlan(goal, pack)
+
+    def get_attempt_evidence(
+        self, goal: LearningGoal, concept_id: str | None = None
+    ) -> tuple[AttemptEvidence, ...]:
+        """Read compact attempt evidence from the append-only event log."""
+        if not self.database_path.exists():
+            return ()
+        with self._connect() as connection:
+            self._create_schema(connection)
+            rows = connection.execute(
+                "SELECT payload_json FROM event_log WHERE kind = 'attempt_recorded' "
+                "ORDER BY rowid"
+            ).fetchall()
+        evidence: list[AttemptEvidence] = []
+        for (raw_payload,) in rows:
+            payload = json.loads(raw_payload)
+            if payload["goal"] != goal.statement:
+                continue
+            if concept_id is not None and payload["concept_id"] != concept_id:
+                continue
+            evidence.append(
+                AttemptEvidence(
+                    goal=goal,
+                    session_id=payload.get("session_id"),
+                    concept_id=payload["concept_id"],
+                    activity_key=payload["activity_key"],
+                    outcome=ReviewOutcome(payload["outcome"]),
+                )
+            )
+        return tuple(evidence)
+
+    def recent_attempt_concepts(
+        self, goal: LearningGoal | None = None, limit: int = 2
+    ) -> tuple[str, ...]:
+        if limit < 1:
+            return ()
+        if not self.database_path.exists():
+            return ()
+        with self._connect() as connection:
+            self._create_schema(connection)
+            rows = connection.execute(
+                "SELECT payload_json FROM event_log WHERE kind = 'attempt_recorded' "
+                "ORDER BY rowid DESC"
+            ).fetchall()
+        concepts: list[str] = []
+        for (raw_payload,) in rows:
+            payload = json.loads(raw_payload)
+            if goal is not None and payload["goal"] != goal.statement:
+                continue
+            concepts.append(payload["concept_id"])
+            if len(concepts) == limit:
+                break
+        return tuple(concepts)
+
     def get_session(self) -> StudySession | None:
         """Return the current or most recently completed session."""
         if not self.database_path.exists():
@@ -235,6 +369,7 @@ class LocalState:
                 "event_count": 0,
                 "preferences": None,
                 "active_goal": None,
+                "course_plan": None,
                 "session": None,
             }
 
@@ -246,6 +381,9 @@ class LocalState:
             ).fetchone()[0]
             goal = self._read_goal(connection)
             session = self._read_session(connection)
+            plan_row = connection.execute(
+                "SELECT payload_json FROM active_course_plan WHERE singleton = 1"
+            ).fetchone()
             return {
                 "initialized": profile is not None,
                 "database_path": str(self.database_path.resolve()),
@@ -258,6 +396,7 @@ class LocalState:
                     else None
                 ),
                 "active_goal": goal.statement if goal is not None else None,
+                "course_plan": json.loads(plan_row[0]) if plan_row is not None else None,
                 "session": _session_json(session),
             }
 
@@ -294,13 +433,29 @@ class LocalState:
             self._create_schema(connection)
             self._write_memory_and_event(connection, state)
 
-    def save_review(self, state: MemoryState) -> StudySession | None:
+    def save_review(
+        self, state: MemoryState, evidence: AttemptEvidence | None = None
+    ) -> StudySession | None:
         """Persist a review and advance an active session in one transaction."""
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             self._create_schema(connection)
             self._write_memory_and_event(connection, state)
             session = self._read_session(connection)
+            if evidence is not None:
+                if evidence.concept_id != state.concept_id:
+                    raise ValueError("attempt evidence concept does not match review")
+                if evidence.outcome is not state.last_outcome:
+                    raise ValueError("attempt evidence outcome does not match review")
+                self._append_event(
+                    connection, "attempt_recorded", {
+                        "goal": evidence.goal.statement,
+                        "session_id": evidence.session_id,
+                        "concept_id": evidence.concept_id,
+                        "activity_key": evidence.activity_key,
+                        "outcome": evidence.outcome.value,
+                    }
+                )
             if session is None or session.status is not SessionStatus.ACTIVE:
                 return session
             advanced = session.advance()
@@ -445,6 +600,16 @@ class LocalState:
                 """
             )
             version = 5
+        if version == 5:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS active_course_plan (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            version = 6
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"unsupported state schema version: {version}")
         connection.execute(
@@ -494,6 +659,27 @@ class LocalState:
             "SELECT statement FROM active_goal WHERE singleton = 1"
         ).fetchone()
         return LearningGoal(row[0]) if row is not None else None
+
+    @staticmethod
+    def _read_course_plan(connection: sqlite3.Connection) -> CoursePlan | None:
+        row = connection.execute(
+            "SELECT payload_json FROM active_course_plan WHERE singleton = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row[0])
+        goal = LearningGoal(payload["goal"])
+        concepts = tuple(
+            Concept(item["identifier"], item["title"], tuple(item["prerequisites"]))
+            for item in payload["concepts"]
+        )
+        return CoursePlan(
+            goal,
+            CurriculumPack(
+                payload["pack_id"], payload["pack_title"], payload["language"],
+                Curriculum(concepts),
+            ),
+        )
 
     @staticmethod
     def _read_session(connection: sqlite3.Connection) -> StudySession | None:
@@ -606,4 +792,21 @@ def _session_json(session: StudySession | None) -> dict[str, object] | None:
         "completed_items": session.completed_count,
         "remaining_items": session.remaining_count,
         "status": session.status.value,
+    }
+
+
+def _course_plan_payload(plan: CoursePlan) -> dict[str, object]:
+    return {
+        "goal": plan.goal.statement,
+        "pack_id": plan.pack.identifier,
+        "pack_title": plan.pack.title,
+        "language": plan.pack.language,
+        "concepts": [
+            {
+                "identifier": concept.identifier,
+                "title": concept.title,
+                "prerequisites": list(concept.prerequisites),
+            }
+            for concept in plan.pack.curriculum.ordered_concepts
+        ],
     }

@@ -27,25 +27,37 @@ uv run ringo goal --set "<learning goal>"
 uv run ringo session --json
 uv run ringo session start --items N --json
 uv run ringo session stop --json
-uv run ringo record <concept-id> --outcome again|hard|good [--pack <path>]
+uv run ringo course --json
+uv run ringo course apply <toml-pack> --json
+uv run ringo record <concept-id> --outcome again|hard|good --activity-key <key> [--pack <path>]
 ```
 
 `protocol` describes the implemented capabilities; it does not accept
-`--json`. `--pack` is optional and must be passed consistently to `status`,
-`catalog`, `next`, and `record` when using a custom TOML pack. Do not modify a
-pack during a session.
+`--json`. `course apply` imports a TOML pack as the active goal plan. After it
+succeeds, omit `--pack` from `status`, `catalog`, `next`, and `record`; passing
+`--pack` is a deliberate legacy override and disables goal evidence. If that
+override is intentionally selected, pass it consistently. Do not modify a pack
+during a session. With an active course plan, every `record` must include a
+short whitespace-free `--activity-key` describing the communicative form, such
+as `mock-interview-introduction`; use a new key for a genuinely different
+activity.
 
 ## Start-up and session recovery
 
 1. From the repository root, run `uv run ringo doctor --json`. If `initialized`
    is false, ask for both language tags and run `init` before teaching.
-2. Run `uv run ringo status --json`, then `uv run ringo goal --json` and
-   `uv run ringo session --json`. Run `uv run ringo configure` to read saved
-   preferences, especially `daily_items`, `new_content_ratio`, and
-   `explanation_style`.
+2. Run `uv run ringo status --json`, then `uv run ringo goal --json`,
+   `uv run ringo course --json`, and `uv run ringo session --json`. Run
+   `uv run ringo configure` to read saved preferences, especially
+   `daily_items`, `new_content_ratio`, and `explanation_style`.
 3. If there is no active goal, ask the learner to confirm a concise learning
    goal, then persist it with `uv run ringo goal --set "..."`. Do not treat a
-   chat-only goal as durable.
+   chat-only goal as durable. If an active goal has no course plan, draft a
+   small TOML pack in `.ringo/` (normally 3–6 truly relevant, ordered,
+   progressive competencies), then apply it with `uv run ringo course apply`.
+   Use `packs/ja-starter.toml` as the compact TOML schema example. The pack
+   contains concepts only, never generated questions or answers. After apply,
+   use the active plan through commands without `--pack`.
 4. Only `session.status == "active"` is resumable. Tell the learner its goal
    snapshot and remaining count, then resume it without asking for a new
    question count. A `completed` or `stopped` session is a closed recent
@@ -69,9 +81,13 @@ silently mix two goal snapshots.
 
 Repeat until the CLI session reports `completed`, or the learner asks to stop:
 
-1. Run `uv run ringo next --json` and inspect the returned target. A target has
+1. Run `uv run ringo next --json` and inspect `next_action`, `goal_progress`,
+   and the returned target. A target has
    an identifier, title, prerequisites, and a reason such as `new`, `review`,
-   or `practice`.
+   or `practice`. Only `continue` may present a target. On `expand`, apply a
+   compatible course extension and run `next` again before teaching. On
+   `complete`, do not invent another exercise: stop an active session and use
+   the completion flow below.
 2. Generate exactly one focused exercise and one concise explanation. Match
    the saved explanation style, use the learner's native language for support,
    and keep the exercise aligned with the active goal and target. Do not bundle
@@ -84,7 +100,7 @@ Repeat until the CLI session reports `completed`, or the learner asks to stop:
 4. Record the presented target exactly once before moving on:
 
    ```text
-   uv run ringo record ja.greetings --outcome good
+   uv run ringo record ja.greetings --outcome good --activity-key interview-opening-thanks
    ```
 
    Treat the record response's session progress as authoritative. If it is
@@ -97,25 +113,37 @@ Repeat until the CLI session reports `completed`, or the learner asks to stop:
 Use `new_content_ratio` as a soft guideline for balancing new content with
 reviews, not as permission to repeat one concept indefinitely. Prefer due
 reviews and curriculum-order progression; vary exercise form and context when
-the target allows it.
+the target allows it. Use `activity_keys` from `next --json` as the already
+used keys for that competency and choose a new communicative activity key.
 
 ## Completion and next steps
 
 Finishing a bounded session is not the same as mastering the whole goal. After
-the CLI session completes, summarize recorded outcomes and current progress.
-Use `status --json` and `catalog --json` to identify remaining or next concepts.
-Then propose a concrete next course or session: continue the current goal with
-the next curriculum concepts, schedule review of weak concepts, or switch to a
-new pack/goal. Do not claim the learning goal is achieved solely because the
-question count is complete, and do not generate endless questions from the
-same small range when the catalog is exhausted.
+the CLI session completes, read `status --json` and report its persisted
+`goal_progress` and `next_action`:
+
+- `continue`: report the named competency gaps and propose the next bounded
+  session; never claim the goal is complete.
+- `expand`: draft a compatible superset TOML pack in `.ringo/`, preserving all
+  existing concept identifiers/titles/prerequisites, apply it, and propose the
+  next session. If there is no plan yet, this is the normal plan-creation step.
+- `complete`: the persisted distinct-good evidence satisfies every competency.
+  If a session is still active, run `uv run ringo session stop --json` first;
+  then announce goal attainment and propose 2–3 follow-up goals or courses
+  without switching to any of them automatically.
+
+Question-count completion and goal completion are separate checkpoints. Never
+generate endless questions from the same small range when `next_action` is
+`expand` or `complete`.
 
 ## Recovery and disagreement
 
-- If `next --json` returns `null`, first run `status --json` and `catalog --json`
-  (preserving the selected pack). Explain the persisted state and offer an
-  actionable choice: expand or switch the pack, retry existing material, or
-  inspect configuration. Do not fabricate an exercise or progress.
+- If an active goal has no plan, or `next --json` reports `next_action:
+  "expand"`, create/apply the small goal-shaped plan or a compatible superset
+  as described above. Do not fall back to the generic starter pack.
+- An active goal's `next --json` is a decision envelope; `target: null` with
+  `expand` is actionable state, not an invitation to invent a question. A
+  legacy no-goal/custom-pack flow may still return a bare target or `null`.
 - If a CLI command errors, show the concise error, correct only the stated
   input problem, and retry. Do not reset state or edit SQLite.
 - If the learner disagrees with a grade, show the evidence and proposed

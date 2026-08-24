@@ -83,6 +83,33 @@ class CliTests(unittest.TestCase):
         self.assertIn("active_learning_goal", protocol["capabilities"])
         self.assertIn("goal", protocol["commands"])
 
+    def test_active_goal_without_plan_returns_expand_decision(self) -> None:
+        self.invoke(
+            "init",
+            "--native-language",
+            "zh-CN",
+            "--target-language",
+            "ja",
+        )
+        self.invoke("goal", "--set", "商务面试常用日语")
+        (self.root / "packs").mkdir()
+        (self.root / "packs" / "ja-starter.toml").write_text(
+            '[pack]\nid = "starter"\ntitle = "Starter"\nlanguage = "ja"\n\n'
+            '[[concepts]]\nidentifier = "ja.greeting"\ntitle = "Greeting"\n',
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.invoke("next", "--json")
+        decision = json.loads(output)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(decision["next_action"], "expand")
+        self.assertIsNone(decision["target"])
+        self.assertEqual(decision["goal_progress"], None)
+        self.assertEqual(
+            set(decision), {"next_action", "goal_progress", "target"}
+        )
+
     def test_goal_command_reads_sets_and_keeps_same_value_idempotent(self) -> None:
         self.invoke(
             "init",
@@ -215,6 +242,63 @@ title = "Greeting"
         exit_code, output = self.invoke("status", "--json", "--pack", "custom.toml")
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(output)["session"]["status"], "completed")
+
+    def test_course_apply_reads_after_restart_and_becomes_default(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "xx")
+        self.invoke("goal", "--set", "商务面试常用日语")
+
+        exit_code, output = self.invoke("course", "apply", "custom.toml", "--json")
+        self.assertEqual(exit_code, 0)
+        applied = json.loads(output)
+        self.assertEqual(applied["goal"], "商务面试常用日语")
+        self.assertEqual(applied["pack"]["id"], "custom")
+        self.assertNotIn("source_path", output)
+        (self.root / "custom.toml").unlink()
+
+        exit_code, output = self.invoke("course", "--json")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output), applied)
+        exit_code, output = self.invoke("next", "--json")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["target"]["identifier"], "xx.first")
+        status = json.loads(self.invoke("status", "--json")[1])
+        self.assertEqual(status["course_plan"]["pack"]["id"], "custom")
+
+    def test_active_course_plan_requires_activity_key_and_returns_coverage(self) -> None:
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "ja")
+        self.invoke("goal", "--set", "商务面试")
+        pack = self.root / "business.toml"
+        pack.write_text("""[pack]
+id = "business"
+title = "Business"
+language = "ja"
+
+[[concepts]]
+identifier = "ja.greeting"
+title = "Greeting"
+""", encoding="utf-8")
+        self.assertEqual(self.invoke("course", "apply", str(pack))[0], 0)
+        self.assertEqual(
+            self.invoke("record", "ja.greeting", "--outcome", "good")[0], 2
+        )
+        self.invoke(
+            "record", "ja.greeting", "--outcome", "good", "--activity-key", "roleplay-a"
+        )
+        next_result = json.loads(self.invoke("next", "--json")[1])
+        self.assertEqual(next_result["next_action"], "continue")
+        self.assertEqual(next_result["target"]["coverage"], 1)
+        self.assertEqual(next_result["target"]["activity_keys"], ["roleplay-a"])
+        self.assertNotIn("coverage", next_result)
+
+    def test_course_apply_rejects_language_mismatch(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "ja")
+        self.invoke("goal", "--set", "商务面试")
+
+        exit_code, output = self.invoke("course", "apply", "custom.toml", "--json")
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(output, "")
 
     def _write_pack(self) -> None:
         (self.root / "custom.toml").write_text(
