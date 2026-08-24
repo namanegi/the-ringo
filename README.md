@@ -66,6 +66,7 @@ The repository currently contains the foundation slice:
 
 Exercise generation, scheduling, grading, language packs, and the TUI are the
 next implementation slices. See [`docs/architecture.md`](docs/architecture.md).
+The scoped delivery plan lives in [`docs/milestones/`](docs/milestones/README.md).
 
 ## Development
 
