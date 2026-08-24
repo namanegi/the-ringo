@@ -86,8 +86,7 @@ be retained so the result can be reviewed.
 
 1. Foundation: CLI, state, protocol, and Skill contract.
 2. Curriculum graph: concepts, prerequisites, and a minimal language pack.
-3. Learning loop: exercise contracts, attempts, and deterministic scheduling.
-4. Agent experience: complete Skill workflow and golden session fixtures.
+3. Learning loop: concept memory, persistent review outcomes, and deterministic scheduling.
+4. Agent experience: complete Skill workflow and compact progress status.
 5. TUI: a polished local interface using the same core.
 6. Providers: OpenAI-compatible and local-model adapters.
-

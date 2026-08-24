@@ -61,6 +61,13 @@ class LearningServiceTests(unittest.TestCase):
         self.assertEqual(self.state.get_memory("first"), state)
         self.assertEqual(self.state.inspect()["event_count"], 1)
 
+    def test_snapshot_summarizes_progress_and_next_target(self) -> None:
+        self.state.initialize("zh-CN", "xx")
+        snapshot = self.service.snapshot(self.now)
+        self.assertEqual((snapshot.started_concepts, snapshot.total_concepts), (0, 3))
+        self.assertEqual(snapshot.due_reviews, 0)
+        self.assertEqual(snapshot.next_target.concept.identifier, "first")
+
 
 if __name__ == "__main__":
     unittest.main()

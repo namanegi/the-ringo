@@ -155,6 +155,15 @@ title = "Greeting"
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(output)["identifier"], "xx.second")
 
+    def test_status_json_is_compact_and_uses_custom_pack(self) -> None:
+        self._write_pack()
+        self.invoke("init", "--native-language", "zh-CN", "--target-language", "xx")
+        exit_code, output = self.invoke("status", "--json", "--pack", "custom.toml")
+        status = json.loads(output)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(status["progress"], {"started": 0, "total": 2})
+        self.assertEqual(status["next"]["reason"], "new")
+
     def _write_pack(self) -> None:
         (self.root / "custom.toml").write_text(
             """

@@ -8,7 +8,8 @@ from datetime import datetime
 from .curriculum import Concept
 from .memory import MemoryState, ReviewOutcome, Scheduler
 from .pack import CurriculumPack
-from .state import LocalState
+from .preferences import LearnerPreferences
+from .state import LearnerProfile, LocalState
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,20 @@ class StudyTarget:
 
     concept: Concept
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressSnapshot:
+    """Immutable, presentation-ready learner progress at one UTC instant."""
+
+    profile: LearnerProfile
+    pack: CurriculumPack
+    started_concepts: int
+    total_concepts: int
+    due_reviews: int
+    preferences: LearnerPreferences
+    next_target: StudyTarget | None
+    as_of: datetime
 
 
 class LearningService:
@@ -59,6 +74,26 @@ class LearningService:
             ):
                 return StudyTarget(concept, "new")
         return None
+
+    def snapshot(self, now: datetime) -> ProgressSnapshot:
+        """Build the compact status view from persisted state and the pack."""
+        memories = [
+            self.state.get_memory(concept.identifier)
+            for concept in self.pack.curriculum.ordered_concepts
+        ]
+        return ProgressSnapshot(
+            profile=self.state.get_profile(),
+            pack=self.pack,
+            started_concepts=sum(memory.last_outcome is not None for memory in memories),
+            total_concepts=len(memories),
+            due_reviews=sum(
+                memory.due_at is not None and memory.due_at <= now
+                for memory in memories
+            ),
+            preferences=self.state.get_preferences(),
+            next_target=self.next_target(now),
+            as_of=now,
+        )
 
     def record(
         self,

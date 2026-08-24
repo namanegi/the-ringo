@@ -90,6 +90,17 @@ class LocalState:
             return LearnerPreferences()
         return LearnerPreferences(row[0], row[1], row[2])
 
+    def get_profile(self) -> LearnerProfile:
+        """Return the initialized learner profile."""
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            profile = self._read_profile(connection)
+        if profile is None:
+            raise RuntimeError("learner state is not initialized")
+        return profile
+
     def save_preferences(self, preferences: LearnerPreferences) -> LearnerPreferences:
         if not self.database_path.exists():
             raise RuntimeError("learner state is not initialized")

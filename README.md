@@ -47,8 +47,11 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```powershell
 uv sync
 uv run ringo init --native-language zh-CN --target-language ja
+uv run ringo configure --daily-items 12 --new-content-ratio 0.3 --explanation-style "brief, example-first, and encouraging"
 uv run ringo catalog
 uv run ringo catalog --json
+uv run ringo status
+uv run ringo status --json
 uv run ringo doctor --json
 uv run ringo protocol
 ```
@@ -58,7 +61,7 @@ ignored by Git and must not contain API keys.
 
 ## Current status
 
-The repository currently contains the M1 curriculum-kernel slice:
+The repository currently contains the M1–M3 agent-experience slices:
 
 - a local SQLite state store;
 - idempotent learner initialization;
@@ -66,11 +69,14 @@ The repository currently contains the M1 curriculum-kernel slice:
 - a TOML curriculum-pack loader with a small Japanese starter pack;
 - `ringo catalog` with human and agent-friendly JSON output;
 - CLI diagnostics and a machine-readable protocol description;
+- persistent scheduling, preferences, and compact `ringo status` output;
 - the desktop-agent skill contract;
 - architecture notes and tests.
 
-Exercise generation, scheduling, grading, additional language packs, and the TUI
-are the next implementation slices. A custom pack can be inspected with
+Exercise generation, grading, additional language packs, and the TUI
+are the next implementation slices. After initialization, `ringo status` shows
+the learner, selected pack, progress, due reviews, preferences, and next action.
+A custom pack can be inspected with
 `uv run ringo catalog --pack path/to/pack.toml`; relative paths are resolved
 from the selected project root. See [`docs/architecture.md`](docs/architecture.md).
 The scoped delivery plan lives in [`docs/milestones/`](docs/milestones/README.md).

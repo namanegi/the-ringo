@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from the_ringo import __version__
-from the_ringo.learning import LearningService
+from the_ringo.learning import LearningService, ProgressSnapshot, StudyTarget
 from the_ringo.memory import ReviewOutcome, Scheduler
 from the_ringo.pack import CurriculumPack, CurriculumPackError, CurriculumPackLoader
 from the_ringo.preferences import LearnerPreferences
@@ -24,6 +24,7 @@ PROTOCOL = {
         "curriculum_catalog",
         "learning_loop",
         "learner_preferences",
+        "progress_status",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
@@ -32,6 +33,7 @@ PROTOCOL = {
         "next": "Choose the next concept to study.",
         "record": "Record a review outcome for a concept.",
         "configure": "View or update learner preferences.",
+        "status": "Summarize learner progress and the next useful concept.",
         "protocol": "Describe implemented machine-facing capabilities.",
     },
 }
@@ -89,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     configure_parser.add_argument("--daily-items", type=int)
     configure_parser.add_argument("--new-content-ratio", type=float)
     configure_parser.add_argument("--explanation-style")
+
+    status_parser = subparsers.add_parser(
+        "status", help="Show learner progress and the next useful concept."
+    )
+    status_parser.add_argument("--json", action="store_true", dest="as_json")
+    status_parser.add_argument("--pack", type=Path, help="Custom TOML pack path.")
 
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
@@ -160,6 +168,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 state.save_preferences(preferences)
             print(json.dumps(_preferences_json(preferences), ensure_ascii=False, indent=2))
+            return 0
+
+        if args.command == "status":
+            snapshot = LearningService(
+                _load_pack(root, args.pack), state, Scheduler()
+            ).snapshot(datetime.now(UTC))
+            if args.as_json:
+                print(json.dumps(_snapshot_json(snapshot), ensure_ascii=False, indent=2))
+            else:
+                print(_snapshot_text(snapshot))
             return 0
 
         if args.command == "catalog":
@@ -258,3 +276,61 @@ def _preferences_json(preferences: LearnerPreferences) -> dict[str, object]:
         "new_content_ratio": preferences.new_content_ratio,
         "explanation_style": preferences.explanation_style,
     }
+
+
+def _target_json(target: StudyTarget | None) -> dict[str, object] | None:
+    if target is None:
+        return None
+    return {
+        "identifier": target.concept.identifier,
+        "title": target.concept.title,
+        "prerequisites": list(target.concept.prerequisites),
+        "reason": target.reason,
+    }
+
+
+def _snapshot_json(snapshot: ProgressSnapshot) -> dict[str, object]:
+    return {
+        "as_of": snapshot.as_of.isoformat(),
+        "learner": {
+            "native_language": snapshot.profile.native_language,
+            "target_language": snapshot.profile.target_language,
+        },
+        "pack": {
+            "id": snapshot.pack.identifier,
+            "title": snapshot.pack.title,
+            "language": snapshot.pack.language,
+        },
+        "progress": {
+            "started": snapshot.started_concepts,
+            "total": snapshot.total_concepts,
+        },
+        "due_reviews": snapshot.due_reviews,
+        "preferences": _preferences_json(snapshot.preferences),
+        "next": _target_json(snapshot.next_target),
+    }
+
+
+def _snapshot_text(snapshot: ProgressSnapshot) -> str:
+    learner = (
+        f"{snapshot.profile.native_language} → "
+        f"{snapshot.profile.target_language}"
+    )
+    preferences = snapshot.preferences
+    next_line = "none"
+    if snapshot.next_target is not None:
+        target = snapshot.next_target
+        next_line = f"{target.concept.identifier} — {target.concept.title} ({target.reason})"
+    return "\n".join(
+        (
+            f"the-ringo — {learner}",
+            f"pack: {snapshot.pack.title} [{snapshot.pack.identifier}]",
+            f"progress: {snapshot.started_concepts}/{snapshot.total_concepts} concepts started",
+            f"reviews due: {snapshot.due_reviews}",
+            "preferences: "
+            f"{preferences.daily_items}/day · "
+            f"{preferences.new_content_ratio:.0%} new · "
+            f"{preferences.explanation_style}",
+            f"next: {next_line}",
+        )
+    )

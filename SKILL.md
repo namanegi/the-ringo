@@ -17,6 +17,7 @@ Only use these commands:
 ```text
 ringo protocol
 ringo doctor --json
+ringo status --json [--pack <path>]
 ringo init --native-language <tag> --target-language <tag>
 ringo configure [--daily-items N] [--new-content-ratio R] [--explanation-style <free text>]
 ringo catalog --json [--pack <path>]
@@ -30,16 +31,15 @@ For example: `ringo configure --explanation-style "brief, example-first, and enc
 
 ## Start-up
 
-1. Run `ringo doctor --json` and inspect its persisted report. A representative
-   response is:
+1. Run `ringo doctor --json` and inspect its persisted report. If `initialized`
+   is false, ask the learner for both language tags and initialize first.
+
+2. Run `ringo status --json` and inspect the compact progress view. A
+   representative response is:
 
    ```json
-   {"initialized": true, "profile": {"native_language": "zh-CN", "target_language": "ja"}, "preferences": {"daily_items": 10, "new_content_ratio": 0.25, "explanation_style": "concise"}}
+   {"learner": {"native_language": "zh-CN", "target_language": "ja"}, "progress": {"started": 0, "total": 3}, "due_reviews": 0, "next": {"identifier": "ja.greetings", "reason": "new"}}
    ```
-
-2. If `initialized` is false, ask the learner for both their native and target
-   language tags. Do not guess either choice. Then run `ringo init` with those
-   explicit choices and inspect the result.
 
 3. Run `ringo configure` with no options to read the saved preferences. Treat
    `daily_items`, `new_content_ratio`, and `explanation_style` as the session
