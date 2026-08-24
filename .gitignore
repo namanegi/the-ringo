@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# the-ringo local learner state
+.ringo/
+
+# Local development tools
+.venv/
+.pytest_cache/
