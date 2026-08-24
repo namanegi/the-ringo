@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from the_ringo.memory import MemoryState, ReviewOutcome
+from the_ringo.preferences import LearnerPreferences
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StateConflictError(RuntimeError):
@@ -61,6 +62,7 @@ class LocalState:
                 """,
                 (native_language, target_language, created_at),
             )
+            self._write_preferences(connection, LearnerPreferences())
             self._append_event(
                 connection,
                 kind="learner_initialized",
@@ -71,6 +73,33 @@ class LocalState:
             )
             return profile
 
+    def get_preferences(self) -> LearnerPreferences:
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            if self._read_profile(connection) is None:
+                raise RuntimeError("learner state is not initialized")
+            row = connection.execute(
+                """
+                SELECT daily_items, new_content_ratio, explanation_style
+                FROM learner_preferences WHERE singleton = 1
+                """
+            ).fetchone()
+        if row is None:
+            return LearnerPreferences()
+        return LearnerPreferences(row[0], row[1], row[2])
+
+    def save_preferences(self, preferences: LearnerPreferences) -> LearnerPreferences:
+        if not self.database_path.exists():
+            raise RuntimeError("learner state is not initialized")
+        with self._connect() as connection:
+            self._create_schema(connection)
+            if self._read_profile(connection) is None:
+                raise RuntimeError("learner state is not initialized")
+            self._write_preferences(connection, preferences)
+            return preferences
+
     def inspect(self) -> dict[str, Any]:
         if not self.database_path.exists():
             return {
@@ -79,6 +108,7 @@ class LocalState:
                 "schema_version": None,
                 "profile": None,
                 "event_count": 0,
+                "preferences": None,
             }
 
         with self._connect() as connection:
@@ -93,6 +123,11 @@ class LocalState:
                 "schema_version": SCHEMA_VERSION,
                 "profile": asdict(profile) if profile is not None else None,
                 "event_count": event_count,
+                "preferences": (
+                    self._read_preferences(connection)
+                    if profile is not None
+                    else None
+                ),
             }
 
     def get_memory(self, concept_id: str) -> MemoryState:
@@ -212,6 +247,23 @@ class LocalState:
                 """
             )
             version = 2
+        if version == 2:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS learner_preferences (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    daily_items INTEGER NOT NULL CHECK (daily_items BETWEEN 1 AND 100),
+                    new_content_ratio REAL NOT NULL
+                        CHECK (new_content_ratio BETWEEN 0 AND 1),
+                    explanation_style TEXT NOT NULL
+                )
+                """
+            )
+            if connection.execute(
+                "SELECT 1 FROM learner_profile WHERE singleton = 1"
+            ).fetchone() is not None:
+                LocalState._write_preferences(connection, LearnerPreferences())
+            version = 3
         if version != SCHEMA_VERSION:
             raise RuntimeError(f"unsupported state schema version: {version}")
         connection.execute(
@@ -236,6 +288,44 @@ class LocalState:
             native_language=row[0],
             target_language=row[1],
             created_at=row[2],
+        )
+
+    @staticmethod
+    def _read_preferences(connection: sqlite3.Connection) -> dict[str, object]:
+        row = connection.execute(
+            """
+            SELECT daily_items, new_content_ratio, explanation_style
+            FROM learner_preferences WHERE singleton = 1
+            """
+        ).fetchone()
+        preferences = (
+            LearnerPreferences(*row) if row is not None else LearnerPreferences()
+        )
+        return {
+            "daily_items": preferences.daily_items,
+            "new_content_ratio": preferences.new_content_ratio,
+            "explanation_style": preferences.explanation_style,
+        }
+
+    @staticmethod
+    def _write_preferences(
+        connection: sqlite3.Connection, preferences: LearnerPreferences
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO learner_preferences (
+                singleton, daily_items, new_content_ratio, explanation_style
+            ) VALUES (1, ?, ?, ?)
+            ON CONFLICT(singleton) DO UPDATE SET
+                daily_items = excluded.daily_items,
+                new_content_ratio = excluded.new_content_ratio,
+                explanation_style = excluded.explanation_style
+            """,
+            (
+                preferences.daily_items,
+                preferences.new_content_ratio,
+                preferences.explanation_style,
+            ),
         )
 
     @staticmethod

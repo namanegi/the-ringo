@@ -11,6 +11,7 @@ from the_ringo import __version__
 from the_ringo.learning import LearningService
 from the_ringo.memory import ReviewOutcome, Scheduler
 from the_ringo.pack import CurriculumPack, CurriculumPackError, CurriculumPackLoader
+from the_ringo.preferences import LearnerPreferences
 from the_ringo.state import LocalState, StateConflictError
 
 PROTOCOL = {
@@ -22,6 +23,7 @@ PROTOCOL = {
         "diagnostics",
         "curriculum_catalog",
         "learning_loop",
+        "learner_preferences",
     ],
     "commands": {
         "init": "Initialize one local learner profile.",
@@ -29,6 +31,7 @@ PROTOCOL = {
         "catalog": "List the ordered concepts in a curriculum pack.",
         "next": "Choose the next concept to study.",
         "record": "Record a review outcome for a concept.",
+        "configure": "View or update learner preferences.",
         "protocol": "Describe implemented machine-facing capabilities.",
     },
 }
@@ -80,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     record_parser.add_argument("--pack", type=Path, help="Custom TOML pack path.")
 
+    configure_parser = subparsers.add_parser(
+        "configure", help="View or update learner preferences."
+    )
+    configure_parser.add_argument("--daily-items", type=int)
+    configure_parser.add_argument("--new-content-ratio", type=float)
+    configure_parser.add_argument("--explanation-style")
+
     subparsers.add_parser("protocol", help="Print the agent-facing protocol.")
     return parser
 
@@ -119,6 +129,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status = "ready" if report["initialized"] else "not initialized"
                 print(f"the-ringo {__version__}: {status}")
                 print(f"state: {report['database_path']}")
+            return 0
+
+        if args.command == "configure":
+            current = state.get_preferences()
+            preferences = LearnerPreferences(
+                daily_items=(
+                    args.daily_items
+                    if args.daily_items is not None
+                    else current.daily_items
+                ),
+                new_content_ratio=(
+                    args.new_content_ratio
+                    if args.new_content_ratio is not None
+                    else current.new_content_ratio
+                ),
+                explanation_style=(
+                    args.explanation_style
+                    if args.explanation_style is not None
+                    else current.explanation_style
+                ),
+            )
+            if any(
+                value is not None
+                for value in (
+                    args.daily_items,
+                    args.new_content_ratio,
+                    args.explanation_style,
+                )
+            ):
+                state.save_preferences(preferences)
+            print(json.dumps(_preferences_json(preferences), ensure_ascii=False, indent=2))
             return 0
 
         if args.command == "catalog":
@@ -191,7 +232,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "protocol":
             print(json.dumps(PROTOCOL, ensure_ascii=False, indent=2, sort_keys=True))
             return 0
-    except (OSError, ValueError, StateConflictError, CurriculumPackError) as error:
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        StateConflictError,
+        CurriculumPackError,
+    ) as error:
         print(f"ringo: error: {error}", file=sys.stderr)
         return 2
 
@@ -203,3 +250,11 @@ def _load_pack(root: Path, requested_path: Path | None) -> CurriculumPack:
     if not pack_path.is_absolute():
         pack_path = root / pack_path
     return CurriculumPackLoader().load(pack_path)
+
+
+def _preferences_json(preferences: LearnerPreferences) -> dict[str, object]:
+    return {
+        "daily_items": preferences.daily_items,
+        "new_content_ratio": preferences.new_content_ratio,
+        "explanation_style": preferences.explanation_style,
+    }
