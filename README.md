@@ -85,8 +85,9 @@ The repository currently contains the M1–M5 goal-driven learning loop:
 - architecture notes and tests.
 
 M5 passed its isolated clean-room Agent role play and release gate on
-2026-08-25. The current `0.1.0` package version is the MVP release candidate;
-see the [M5 closeout report](docs/acceptance/M5-closeout.md).
+2026-08-25. `v0.1.0` is the first MVP release; `v0.1.1` adds the public
+Apache-2.0 license and matching package metadata. See the
+[M5 closeout report](docs/acceptance/M5-closeout.md).
 
 The desktop agent still owns exercise generation, explanation, and semantic
 grading. A standalone TUI and model-provider adapters remain later slices.
@@ -96,6 +97,11 @@ imported with `uv run ringo course apply path/to/pack.toml`; a deliberate legacy
 override remains available through `--pack`. See
 [`docs/architecture.md`](docs/architecture.md).
 The scoped delivery plan lives in [`docs/milestones/`](docs/milestones/README.md).
+
+## License
+
+Copyright 2026 Namanegi. Licensed under the
+[Apache License 2.0](LICENSE).
 
 ## Development
 
