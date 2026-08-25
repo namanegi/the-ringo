@@ -103,10 +103,31 @@ Each milestone needs only:
 Never run role play against the learner's real `.ringo` directory. The original
 database's event count and status must be unchanged after acceptance.
 
-## Baseline — 2026-08-25
+## M5 closeout — 2026-08-25
 
-An isolated six-question business-interview role play produced four greetings
-targets and two self-introduction targets.
+The post-M5 clean-room run passed the release gate. A Luna tutor Agent used an
+isolated copy of the learner database, resumed the persisted goal and
+preferences, completed a six-question lesson across a simulated Agent-task
+restart, and closed the goal with two distinct successful activities for each
+of three competencies. The original learner database remained unchanged.
+
+| Capability | Result | Evidence |
+| --- | --- | --- |
+| target setting | PASS | persisted business-interview goal shaped a three-competency plan |
+| question count | PASS | the resumed session stopped at exactly 6/6 |
+| continuous lesson | PASS | all six attempts were recorded once across a restart |
+| goal attainment | PASS | each competency reached two distinct successful activities |
+| next-course proposal | PASS | completion produced three Agent-authored follow-up proposals |
+| progressive content | PASS | three competencies appeared in prerequisite order, then varied practice |
+
+Acceptance scenarios A–E and the detailed CLI evidence are recorded in the
+[M5 closeout report](acceptance/M5-closeout.md).
+
+## Pre-M4 baseline — 2026-08-25
+
+Before the goal/session and course-progression milestones, an isolated
+six-question business-interview role play produced four greetings targets and
+two self-introduction targets.
 
 | Capability | Result | Evidence |
 | --- | --- | --- |

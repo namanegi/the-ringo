@@ -1,5 +1,8 @@
 # M5 — Course Progression and Closure
 
+Status: **Complete** — accepted on 2026-08-25. See the
+[clean-room closeout report](../acceptance/M5-closeout.md).
+
 ## Outcome
 
 An agent can turn the active goal into a small validated competency plan, provide

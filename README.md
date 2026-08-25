@@ -84,6 +84,10 @@ The repository currently contains the M1–M5 goal-driven learning loop:
 - the desktop-agent skill contract;
 - architecture notes and tests.
 
+M5 passed its isolated clean-room Agent role play and release gate on
+2026-08-25. The current `0.1.0` package version is the MVP release candidate;
+see the [M5 closeout report](docs/acceptance/M5-closeout.md).
+
 The desktop agent still owns exercise generation, explanation, and semantic
 grading. A standalone TUI and model-provider adapters remain later slices.
 `ringo status --json` exposes the learner, course, session, competency evidence,
